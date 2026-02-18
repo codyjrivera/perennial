@@ -4,7 +4,7 @@ From New.generatedproof Require math.rand testing unsafe.
 
 From New.generatedproof.github_com.stretchr.testify Require assert.
 
-From New.proof Require Import bytes chan context sort slices runtime.
+From New.proof Require Import btree bytes chan context sort slices runtime.
 
 (* required just to make sure this demo works *)
 From New.golang.theory Require static_mem.
