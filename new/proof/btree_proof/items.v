@@ -51,54 +51,6 @@ Lemma wp_items__find (sl : slice.t) (items_list : list interface.t)
          (∀ j e, items_list !! j = Some e → (j < uint.nat idx)%nat → R e key) ∧
          (∀ j e, items_list !! j = Some e → (uint.nat idx ≤ j)%nat → R key e)⌝ }}}.
 Proof.
-  (* BLOCKED on pred_implements closure. Root cause analysis via rocq_step.py:
-     -----------------------------------------------------------------
-     The closure body contains an IMPURE operation (interface.get / method
-     dispatch). In sort_proof/search.v:281 (SearchInts), the analogous
-     closure body is pure (just an integer comparison), so wp_auto handles
-     exception_do transparently via PureWp instances. Here, the Less method
-     call breaks the PureWp chain.
-
-     Diagnosis (confirmed with rocq_step.py intermediate states):
-     1. wp_start succeeds — beta-reduces the closure application.
-     2. wp_auto succeeds partially — allocates local vars, loads slice len,
-        gets to: WP exception_do (let: "i" := alloc ... in return: (...)) {{ Φ }}
-     3. wp_auto STOPS — can't step inside exception_do because:
-        - exception_do is sealed (AppRCtx can't be decomposed)
-        - The inner body has an impure step (interface.get), so the PureWp
-          instance pure_exception_do_return_v doesn't fire (it needs the
-          entire body to reduce to return_val v first)
-     4. wp_bind can't help either — walk_expr in proofmode.v DOES traverse
-        into AppRCtx, but wp_bind (alloc _)%E fails to match the pattern
-        (possibly because alloc (# idx_w) is App (Val alloc) (Val idx_w)
-        and walk_expr's App (Val _) (Val _) case goes left into Val, stopping).
-
-     Attempted fixes:
-     - rewrite exception_do_unseal: reveals (λ: "v", Snd "v") but wp_auto
-       still can't step through (the lambda applied to non-value)
-     - rewrite exception_do_unseal do_return_unseal: do_return is Local,
-       can't unfold by name
-     - wp_bind.: finds the closure call but not the inner expression
-     - wp_bind (alloc _)%E: "could not find pattern"
-     - iApply (wp_bind (fill [AppRCtx exception_do])): type mismatch
-       between goose_ectxi_lang.expr and language.expr
-
-     LIKELY FIX: Need a wp_exception_do_bind lemma or tactic that does
-     iApply wp_bind with the right coercion for AppRCtx exception_do.
-     This is a one-line lemma but requires getting the Iris type plumbing
-     right. See items_test.v for the failed attempt. Alternatively, a
-     framework-level fix in proofmode.v to make walk_expr / wp_auto aware
-     of the exception_do evaluation context would fix all such closures.
-     -----------------------------------------------------------------
-
-     NOTE: The exception_do blocker affects the ENTIRE function body, not
-     just the closure. After Search returns, the continuation is also inside
-     exception_do, so wp_auto/wp_if_destruct fail there too.
-
-     The proof sketch below is preserved as comments. The pre-Search setup
-     (wp_start, wp_auto, set, wp_apply) and is_mono_pred all compile.
-     The pred_implements closure and post-Search branches need the fix. *)
-
   wp_start as "(Hsl & #Hless & %Hsorted & %Hkey_nn & %Hnn)".
   iDestruct (own_slice_len with "Hsl") as %Hlen.
   wp_auto.
@@ -112,22 +64,27 @@ Proof.
     iSplit.
     { iPureIntro. word. }
     iSplit.
-    - (* pred_implements — BLOCKED on exception_do, see note above.
-         Once unblocked, the proof should be:
-           wp_auto.  (* step through exception_do + alloc + loads *)
-           list_elem items_list (sint.Z idx_w) as xi.
-           wp_apply (wp_load_slice_elem with "[$Hsl]") as "Hsl".
-           { word. } { rewrite Hxi_lookup. eauto. }
-           wp_apply ("Hless" with "[//] [//]").
-           iIntros (b) "%Hb".
-           wp_auto.
-           iApply "HΦ". iFrame. iPureIntro.
-           rewrite /f /find_f Hxi_lookup.
-           f_equal. apply bool_decide_ext. exact Hb. *)
+    - (* pred_implements *)
       iIntros (idx_w). wp_start as "((Hs & Hitem & Hsl) & %Hbound)".
-      admit.
+      wp_auto.
+      wp_alloc i as "Hi".
+      wp_auto.
+      list_elem items_list (sint.Z idx_w) as xi.
+      wp_apply (wp_load_slice_elem with "[$Hsl]") as "Hsl".
+      { word. } { iPureIntro. exact Hxi_lookup. }
+      assert (xi ≠ interface.nil) as Hxi_nn by (eapply (Forall_lookup_1 _ _ _ _ Hnn Hxi_lookup)).
+      wp_apply ("Hless" $! key xi with "[//] [//]").
+      iIntros (b) "%Hb".
+      wp_auto.
+      iApply "HΦ". iFrame. iPureIntro.
+      rewrite /f /find_f.
+      replace (Z.to_nat (sint.Z idx_w)) with (sint.nat idx_w) by word.
+      rewrite Hxi_lookup.
+      destruct b; symmetry.
+      + apply bool_decide_eq_true. apply Hb. done.
+      + apply bool_decide_eq_false. intro. apply Hb. done.
     - iPureIntro.
-      (* is_mono_pred — PROVED *)
+      (* is_mono_pred *)
       rewrite /is_mono_pred /f /find_f.
       intros i j (Hi & Hij & Hj) Hfi.
       list_elem items_list (Z.to_nat i) as xi.
@@ -140,36 +97,31 @@ Proof.
       apply Hsorted with (i:=Z.to_nat i) (j:=Z.to_nat j); try lia; eauto.
   }
 
-  (* Post-Search — BLOCKED on exception_do (same issue, entire body is wrapped).
-     Once the exception_do fix lands, the proof continues:
-
+  (* Post-Search *)
   iIntros (i) "(HI & %Hi_nn & %Hfound & %Hoob & %Hbelow)".
   iDestruct "HI" as "(Hs & Hitem & Hsl)".
   wp_auto.
 
+  assert (sint.Z i ≤ sint.Z sl.(slice.len_f)) as Hi_le.
+  { destruct (decide (sint.Z i < sint.Z sl.(slice.len_f))); [lia|].
+    assert (sint.Z i = sint.Z sl.(slice.len_f)); [|lia].
+    apply Hoob. intros k Hk. apply Hbelow. lia. }
+
   wp_if_destruct.
   - (* i > 0 — check !items[i-1].Less(key) *)
-    wp_auto.
     list_elem items_list (sint.nat (word.sub i (W64 1))) as xi_prev.
-    wp_apply (wp_load_slice_elem with "[$Hsl]") as "Hsl".
-    { word. } { eauto. }
-    wp_apply ("Hless" with "[//] [//]").
+    wp_pure.
+    { word. }
+    wp_apply (wp_load_slice_elem with "[$Hsl //]") as "Hsl".
+    { word. }
+    assert (xi_prev ≠ interface.nil) as Hxi_prev_nn
+      by (eapply (Forall_lookup_1 _ _ _ _ Hnn Hxi_prev_lookup)).
+    wp_apply ("Hless" $! xi_prev key with "[//] [//]").
     iIntros (b) "%Hb".
     wp_auto.
     wp_if_destruct.
-    + (* ¬Less → found *)
-      wp_auto. iApply "HΦ". iFrame. iPureIntro.
-      assert (¬R xi_prev key) as Hnot_less by naive_solver.
-      assert (¬R key xi_prev) as Hnot_less2.
-      { apply (find_f_false R key items_list (sint.Z (word.sub i (W64 1))) xi_prev); eauto.
-        { replace (Z.to_nat (sint.Z (word.sub i (W64 1)))) with
-            (sint.nat (word.sub i (W64 1))) by word. eauto. }
-        apply Hbelow. word. }
-      exists xi_prev. split; [|split]; eauto.
-      replace (uint.nat (word.sub i (W64 1))) with
-        (sint.nat (word.sub i (W64 1))) by word. eauto.
-    + (* Less → not found *)
-      wp_auto. iApply "HΦ". iFrame. iPureIntro.
+    + (* b=true, R xi_prev key → ~b=false → else branch → not found, return (i, false) *)
+      iApply "HΦ". iFrame. iPureIntro.
       assert (R xi_prev key) as Hprev_lt by naive_solver.
       split.
       * intros j e Hj_lookup Hj_lt.
@@ -178,7 +130,7 @@ Proof.
             (rewrite Hxi_prev_lookup in Hj_lookup; congruence). done. }
         { eapply transitivity; eauto.
           apply Hsorted with (i:=j) (j:=sint.nat (word.sub i (W64 1)));
-            try lia; eauto. }
+            try word; eauto. }
       * intros j e Hj_lookup Hj_ge.
         destruct (decide (sint.Z i < sint.Z sl.(slice.len_f))).
         { assert (find_f R key items_list (sint.Z i) = true) as Hfi
@@ -190,35 +142,45 @@ Proof.
             apply bool_decide_eq_true in Hfi. done. }
           { list_elem items_list (uint.nat i) as x_i.
             assert (R key x_i).
-            { rewrite find_f_true;
-                [|replace (Z.to_nat (sint.Z i)) with (uint.nat i) by word; eauto].
+            { apply (find_f_true R key items_list (sint.Z i) x_i).
+              { replace (Z.to_nat (sint.Z i)) with (uint.nat i) by word. eauto. }
               apply Hfound. word. }
             eapply transitivity; eauto.
             apply Hsorted with (i:=uint.nat i) (j:=j); try lia; eauto. } }
         { exfalso. apply lookup_lt_Some in Hj_lookup. word. }
-  - (* i = 0 — not found *)
-    wp_auto. iApply "HΦ". iFrame. iPureIntro.
+    + (* b=false, ¬R xi_prev key → ~b=true → then branch → found, return (i-1, true) *)
+      iApply "HΦ". iFrame. iPureIntro.
+      assert (¬R xi_prev key) as Hnot_less by naive_solver.
+      assert (¬R key xi_prev) as Hnot_less2.
+      { apply (find_f_false R key items_list (sint.Z (word.sub i (W64 1))) xi_prev).
+        { replace (Z.to_nat (sint.Z (word.sub i (W64 1)))) with
+            (sint.nat (word.sub i (W64 1))) by word. eauto. }
+        apply Hbelow. word. }
+      exists xi_prev. split; [|split]; eauto.
+      replace (uint.nat (word.sub i (W64 1))) with
+        (sint.nat (word.sub i (W64 1))) by word. eauto.
+  - (* i = 0 — not found, return (i, false) *)
+    iApply "HΦ". iFrame. iPureIntro.
     split.
-    + intros j e Hj_lookup Hj_lt. lia.
+    + intros j e Hj_lookup Hj_lt. exfalso. word.
     + intros j e Hj_lookup Hj_ge.
-      assert (uint.nat i = 0) as Hi0 by word.
+      assert (uint.nat i = 0%nat) as Hi0 by word.
       destruct (decide (sint.Z i < sint.Z sl.(slice.len_f))).
       { assert (find_f R key items_list (sint.Z i) = true) as Hfi
           by (apply Hfound; word).
-        destruct (decide (j = 0)).
+        destruct (decide (j = 0%nat)).
         { subst. rewrite /f /find_f in Hfi.
           replace (Z.to_nat (sint.Z i)) with 0%nat in Hfi by word.
           rewrite Hj_lookup in Hfi.
           apply bool_decide_eq_true in Hfi. done. }
-        { list_elem items_list 0 as x0.
+        { list_elem items_list (0%nat) as x0.
           assert (R key x0).
-          { rewrite find_f_true;
-              [|replace (Z.to_nat (sint.Z i)) with 0%nat by word; eauto].
+          { apply (find_f_true R key items_list (sint.Z i) x0).
+            { replace (Z.to_nat (sint.Z i)) with 0%nat by word. eauto. }
             apply Hfound. word. }
           eapply transitivity; eauto.
-          apply Hsorted with (i:=0%nat) (j:=j); try lia; eauto. } }
+          apply Hsorted with (i:=0%nat) (j:=j); try word; eauto. } }
       { exfalso. apply lookup_lt_Some in Hj_lookup. word. }
-  *)
-Admitted.
+Qed.
 
 End proof.
