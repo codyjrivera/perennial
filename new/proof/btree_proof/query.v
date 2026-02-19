@@ -67,23 +67,50 @@ Proof.
     wp_if_destruct.
     + (* found = true: return items[idx] *)
       destruct Hfind as (e & Hlookup & Hne & Hnk).
-      (* STUCK: need to load items[idx] inside exception_do + exception_seq.
-         wp_pure fails ("Cannot find witness").
-         wp_load_slice_elem' fails ("iApply: cannot apply").
-         walk_expr doesn't traverse exception_seq/do_return contexts. *)
-      admit.
+      assert (0 ≤ sint.Z idx < sint.Z items_sl.(slice.len_f)) as Hidx_bound.
+      { apply lookup_lt_Some in Hlookup. word. }
+      wp_bind (load_ty _ _).
+      wp_auto.
+      wp_apply (wp_load_slice_elem with "[$Hitems_own]") as "Hitems_own".
+      { word. }
+      { iPureIntro. replace (sint.nat idx) with (uint.nat idx) by word. exact Hlookup. }
+      (* After wp_bind + load, continuation is WP exception_do ((return: #e) ;;; ...) *)
+      (* which wp_auto should resolve, but if goal is already Φ, skip *)
+      iApply "HΦ".
+      iSplitL.
+      { subst.
+        iExists items_sl, children_sl, items, [], [].
+        iFrame "Hitems_field Hchildren_field Hitems_own Hchildren_own".
+        iPureIntro. repeat split; try done; try set_solver. }
+      iPureIntro. split.
+      { intros _. split; [|split]; eauto.
+        subst elems. apply elem_of_union_l.
+        apply elem_of_list_to_set. eapply list_elem_of_lookup_2. exact Hlookup. }
+      { intros Habs. exfalso.
+        assert (e ≠ interface.nil).
+        { exact (Forall_lookup_1 _ _ _ _ Hitems_non_nil Hlookup). }
+        congruence. }
     + (* found = false, leaf *)
       destruct Hfind as [Hfind_below Hfind_above].
       wp_if_destruct.
       * (* len(children) > 0 — contradiction: leaf has [] children *)
         iDestruct (own_slice_len with "Hchildren_own") as %Hcl_len.
         exfalso. simpl in *. word.
-      * (* leaf, return nil — wp_auto resolves exception_do (return: #nil) *)
-        (* Postcondition: reassemble node_repr_aux, then show
-           ∀ e ∈ list_to_set items, R e key ∨ R key e
-           using Hfind_below (j < idx → R items[j] key)
-           and Hfind_above (j ≥ idx → R key items[j]). *)
-        admit.
+      * (* leaf, return nil *)
+        iApply "HΦ".
+        iSplitL.
+        { iExists items_sl, children_sl, items, [], [].
+          iFrame. iPureIntro.
+          repeat split; try done; try set_solver. }
+        iPureIntro. split.
+        { intros Habs. exfalso. exact (Habs eq_refl). }
+        { intros _ e He.
+          rewrite union_empty_r_L in He.
+          apply elem_of_list_to_set in He.
+          apply list_elem_of_lookup_1 in He as [j Hj].
+          destruct (decide (j < uint.nat idx)%nat).
+          - left. eapply Hfind_below; eauto.
+          - right. eapply Hfind_above; eauto. lia. }
   - (* height = S h *)
     wp_auto.
     wp_apply (wp_items__find with "[$Hitems_own $Hless]").
@@ -91,9 +118,26 @@ Proof.
     iIntros (idx found) "(Hitems_own & %Hfind)".
     wp_auto.
     wp_if_destruct.
-    + (* found = true: same STUCK issue as height=0 *)
+    + (* found = true: return items[idx] *)
       destruct Hfind as (e & Hlookup & Hne & Hnk).
-      admit.
+      assert (0 ≤ sint.Z idx < sint.Z items_sl.(slice.len_f)) as Hidx_bound.
+      { apply lookup_lt_Some in Hlookup. word. }
+      wp_bind (load_ty _ _).
+      wp_auto.
+      wp_apply (wp_load_slice_elem with "[$Hitems_own]") as "Hitems_own".
+      { word. }
+      { iPureIntro. replace (sint.nat idx) with (uint.nat idx) by word. exact Hlookup. }
+      iApply "HΦ".
+      iSplitL.
+      { iExists items_sl, children_sl, items, child_locs, children_sets.
+        iFrame "Hitems_field Hchildren_field Hitems_own Hchildren_own Hchildren_rep".
+        iPureIntro. repeat split; try done; try apply Hordering. }
+      iPureIntro. split.
+      { intros _. split; [|split]; eauto.
+        subst elems. apply elem_of_union_l.
+        apply elem_of_list_to_set. eapply list_elem_of_lookup_2. exact Hlookup. }
+      { intros Habs. exfalso.
+        exact (Forall_lookup_1 _ _ _ _ Hitems_non_nil Hlookup Habs). }
     + (* found = false *)
       destruct Hfind as [Hfind_below Hfind_above].
       wp_if_destruct.
@@ -105,14 +149,92 @@ Proof.
            (3) wp_apply "IH" with the child's node_repr_aux.
            (4) Reassemble [∗ list] (put child back).
            (5) Postcondition for result=nil: btree_ordering + transitivity. *)
-        admit.
+        iDestruct (own_slice_len with "Hchildren_own") as %Hcl_len.
+        (* idx < len(child_locs) because child_locs = items + 1 and idx ≤ len(items) *)
+        assert (uint.nat idx < length child_locs) as Hidx_child_bound.
+        { (* Need: idx ≤ len(items), len(child_locs) = len(items)+1.
+             Second follows from Hsize + len(children) > 0.
+             First needs to be added to items.find postcondition (0 ≤ idx ≤ len). *)
+          admit. }
+        assert (0 ≤ sint.Z idx < sint.Z children_sl.(slice.len_f)) as Hidx_cbound.
+        { word. }
+        list_elem child_locs (uint.nat idx) as child_loc.
+        (* Also need the corresponding child set *)
+        iDestruct (big_sepL2_length with "Hchildren_rep") as %Hcl_cs_len.
+        assert (∃ child_set, children_sets !! uint.nat idx = Some child_set)
+          as [child_set Hcs_lookup].
+        { apply lookup_lt_is_Some_2. lia. }
+        (* Load children[idx] *)
+        wp_bind (load_ty _ _).
+        wp_auto.
+        wp_apply (wp_load_slice_elem with "[$Hchildren_own]") as "Hchildren_own".
+        { word. }
+        { iPureIntro. replace (sint.nat idx) with (uint.nat idx) by word.
+          exact Hchild_loc_lookup. }
+        (* Extract child from big_sepL2 *)
+        iDestruct (big_sepL2_lookup_acc with "Hchildren_rep") as "[Hchild Hchildren_rep_close]".
+        { exact Hchild_loc_lookup. }
+        { exact Hcs_lookup. }
+        (* Recursive call *)
+        wp_apply ("IH" with "[Hchild]").
+        { iFrame "Hchild Hless". iFrame "#". iPureIntro. exact Hkey_nn. }
+        iIntros (result) "(Hchild & %Hresult)".
+        (* Put child back *)
+        iDestruct ("Hchildren_rep_close" with "Hchild") as "Hchildren_rep".
+        (* Now prove postcondition *)
+        wp_auto.
+        iApply "HΦ".
+        iSplitL.
+        { iExists items_sl, children_sl, items, child_locs, children_sets.
+          iFrame "Hitems_field Hchildren_field Hitems_own Hchildren_own Hchildren_rep".
+          iPureIntro. repeat split; try done; try apply Hordering. }
+        iPureIntro.
+        destruct Hresult as [Hresult_found Hresult_nil].
+        split.
+        { (* result ≠ nil → result ∈ elems ∧ ¬R result key ∧ ¬R key result
+             From IH: result ∈ child_set. child_set ∈ children_sets (via Hcs_lookup).
+             So result ∈ ⋃ children_sets ⊆ elems. *)
+          intros Hnn. destruct (Hresult_found Hnn) as (Hin & Hr1 & Hr2).
+          split; [|split]; eauto.
+          apply elem_of_union_r. apply elem_of_union_list.
+          exists child_set. split; eauto.
+          apply list_elem_of_lookup_2 with (i := uint.nat idx). exact Hcs_lookup. }
+        { (* result = nil → ∀ e ∈ elems, R e key ∨ R key e
+             Items: Hfind_below/Hfind_above.
+             Children[idx]: IH result (Hresult_nil).
+             Children[j<idx]: ordering upper bound items[j] + Hfind_below + transitivity.
+             Children[j>idx]: ordering lower bound items[j-1] + Hfind_above + transitivity.
+             Needs: len(children_sets) = len(child_locs) (from Hcl_cs_len),
+                    j < len(items) or j-1 < len(items) for lookup existence. *)
+          admit. }
       * (* no children, return nil.
            Postcondition: show ∀ e ∈ elems, R e key ∨ R key e.
            Items: same as leaf case via Hfind_below/Hfind_above.
            Children: need to show all e in ⋃ children_sets satisfy it,
            but if no children (len=0), children_sets might still be nonempty
            at height S h — need to argue from Hsize or similar. *)
-        admit.
+        (* children_sl has length 0, so child_locs = [] *)
+        iDestruct (own_slice_len with "Hchildren_own") as %Hcl_len.
+        assert (child_locs = []) as Hcl_nil.
+        { apply nil_length_inv. word. }
+        subst child_locs.
+        iDestruct (big_sepL2_nil_inv_l with "Hchildren_rep") as %Hcs_nil.
+        subst children_sets.
+        iApply "HΦ".
+        iSplitL.
+        { iExists items_sl, children_sl, items, [], [].
+          iFrame "Hitems_field Hchildren_field Hitems_own Hchildren_own".
+          iSplit. { done. }
+          iPureIntro. repeat split; try done; try apply Hordering. }
+        iPureIntro. split.
+        { intros Habs. exfalso. exact (Habs eq_refl). }
+        { intros _ e He.
+          rewrite union_empty_r_L in He.
+          apply elem_of_list_to_set in He.
+          apply list_elem_of_lookup_1 in He as [j Hj].
+          destruct (decide (j < uint.nat idx)%nat).
+          - left. eapply Hfind_below; eauto.
+          - right. eapply Hfind_above; eauto. lia. }
 Admitted.
 
 (** ** BTree.Get *)
