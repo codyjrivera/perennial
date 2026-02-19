@@ -22,29 +22,27 @@ Definition items_sorted (R : interface.t → interface.t → Prop)
 
 (** B-tree ordering invariant between items and children element sets.
 
-    For a node with [n] items and [n+1] children:
-    - For each child [i] with [i < n]:
-        all elements in [children_sets !! i] are [R]-less than [items !! i]
-    - For the last child [n]:
-        all elements are [R]-greater than [items !! (n - 1)]
+    For a node with [n] items and [n+1] children [c₀, …, cₙ]:
+    - Upper bound: for child [i < n], all elements in [cᵢ] satisfy
+        [R e items[i]].
+    - Lower bound: for child [i > 0], all elements in [cᵢ] satisfy
+        [R items[i-1] e].
 
-    NOTE: this follows the pseudo-code specification.  It gives upper bounds
-    for children [0 .. n-1] and a lower bound only for the last child.
-    For the full interleaving property, intermediate children also need
-    lower bounds (i.e., [R (items !! (i-1)) e] for [0 < i]). *)
+    Together these give the standard interleaving:
+      c₀ < x₀ < c₁ < x₁ < … < x_{n-1} < cₙ *)
 Definition btree_ordering (R : interface.t → interface.t → Prop)
     (items : list interface.t)
     (children_sets : list (gset interface.t)) : Prop :=
-  (* upper bound: for each child i < len(children) - 1, elements < items[i] *)
+  (* upper bound: child i < items[i] *)
   (∀ (i : nat) (s : gset interface.t) (x : interface.t),
-    (i < length children_sets - 1)%nat →
     children_sets !! i = Some s →
     items !! i = Some x →
     ∀ e, e ∈ s → R e x) ∧
-  (* lower bound: for the last child, elements > last item *)
-  (∀ (s : gset interface.t) (x : interface.t),
-    children_sets !! (length children_sets - 1)%nat = Some s →
-    items !! (length items - 1)%nat = Some x →
+  (* lower bound: items[i-1] < child i *)
+  (∀ (i : nat) (s : gset interface.t) (x : interface.t),
+    (0 < i)%nat →
+    children_sets !! i = Some s →
+    items !! (i - 1)%nat = Some x →
     ∀ e, e ∈ s → R x e).
 
 (** ** Ordering interface

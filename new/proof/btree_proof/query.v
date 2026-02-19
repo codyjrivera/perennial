@@ -25,15 +25,17 @@ Qed.
 
 (** ** node.get *)
 
-Lemma wp_node__get height R (n : loc) (elems : gset interface.t)
+Lemma wp_node__get enforce_min height R
+    `{!RelDecision R, !Transitive R}
+    (n : loc) (elems : gset interface.t)
     (degree : Z) (key : interface.t) :
   {{{ is_pkg_init btree ∗
-      node_repr height R n elems degree ∗
+      node_repr_aux enforce_min height R n elems degree ∗
       is_less_order R ∗
       ⌜key ≠ interface.nil⌝ }}}
     n @ (ptrT.id btree.node.id) @ "get"%go #key
   {{{ (result : interface.t), RET #result;
-      node_repr height R n elems degree ∗
+      node_repr_aux enforce_min height R n elems degree ∗
       ⌜(result ≠ interface.nil → result ∈ elems ∧ ¬R result key ∧ ¬R key result) ∧
        (result = interface.nil → ∀ e, e ∈ elems → R e key ∨ R key e)⌝ }}}.
 Proof.
@@ -41,7 +43,8 @@ Admitted.
 
 (** ** BTree.Get *)
 
-Lemma wp_BTree__Get R (t : loc) (elems : gset interface.t)
+Lemma wp_BTree__Get R `{!RelDecision R, !Transitive R}
+    (t : loc) (elems : gset interface.t)
     (key : interface.t) :
   {{{ is_pkg_init btree ∗
       btree_repr R t elems ∗
@@ -57,7 +60,8 @@ Admitted.
 
 (** ** BTree.Has *)
 
-Lemma wp_BTree__Has R (t : loc) (elems : gset interface.t)
+Lemma wp_BTree__Has R `{!RelDecision R, !Transitive R}
+    (t : loc) (elems : gset interface.t)
     (key : interface.t) :
   {{{ is_pkg_init btree ∗
       btree_repr R t elems ∗
