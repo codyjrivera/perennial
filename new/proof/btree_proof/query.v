@@ -25,45 +25,19 @@ Qed.
 
 (** ** node.get
 
-    Proof is by induction on [height] (the fuel in [node_repr_aux]).
-    At each node:
-    1. Call [items.find] to locate [key] in [items].
-    2. If found, return the matching item.
-    3. If not found and children exist, recurse into [children[idx]].
-    4. If not found and no children (leaf), return [nil].
-
-    The "not found + nil from child" postcondition (every element in the
-    subtree is R-comparable to key) relies on:
-    - [items.find] postcondition for items
-    - The IH for [children_sets[idx]]
-    - [btree_ordering] upper bounds + transitivity for [j < idx]
-    - [btree_ordering] lower bounds + transitivity for [j > idx]
-
-    STATUS (2026-02-18):
-    - Induction structure: [revert enforce_min n elems; induction height].
-    - wp_start + wp_auto + wp_apply wp_items__find + wp_if_destruct all work.
-    - "found = true" branches (both heights):
-        wp_load_slice_elem fires to load items[idx].
-        UNTESTED whether wp_auto after the load steps through
-        return:/exception_seq/exception_do. The postcondition proof:
-        elem ∈ elems via Helems + elem_of_list_to_set + Helem_lookup.
-        elem ≠ nil via Hitems_non_nil + Forall_lookup.
-    - "found = false" leaf branches (height=0 or no children):
-        NOT STARTED. Pure argument: children_sets = [] (or empty),
-        so elems = list_to_set items, and find's postcondition gives
-        ∀ j < idx, R items[j] key; ∀ j ≥ idx, R key items[j].
-    - "found = false, children > 0" recursive branch:
-        NOT STARTED. Requires:
-        (1) Load child_locs[idx] via wp_load_slice_elem on Hchildren_own.
-        (2) Extract idx-th child from big_sepL2 Hchildren_rep
-            (big_sepL2_lookup_acc or similar).
-        (3) Apply IH: wp_apply (IH true child_loc child_elems ...).
-        (4) Reassemble node_repr_aux (put child back into big_sepL2).
-        (5) Postcondition for result=nil uses btree_ordering + transitivity
-            for children_sets[j≠idx], IH for children_sets[idx].
-    - wp_auto FAILS between found=false and len(children) check
-      (same exception_seq issue as items.v). Workaround: skip wp_auto,
-      go straight to wp_if_destruct. *)
+    STATUS (2026-02-19):
+    - Using [iLöb] for recursive spec.
+    - [wp_auto] handles allocs. [wp_apply wp_items__find] works inside
+      [exception_do]. [wp_if_destruct] works for [found] and [len(children)].
+    - STUCK on "found = true" branch: need to load [items[idx]] but
+      [wp_pure] and [wp_load_slice_elem'] both fail — [walk_expr] doesn't
+      seem to traverse [exception_seq]/[do_return] contexts.
+    - "found = false, leaf, return nil" branch: postcondition proof works
+      (using [Hfind_below]/[Hfind_above] from items.find).
+    - "found = false, children > 0" recursive branch: not started.
+    - "found = false, no children, S h" branch: postcondition needs
+      argument that all elements in children_sets satisfy R e key ∨ R key e.
+*)
 
 Lemma wp_node__get enforce_min height R
     `{!RelDecision R, !Transitive R}
@@ -78,7 +52,68 @@ Lemma wp_node__get enforce_min height R
       node_repr_aux enforce_min height R n elems degree ∗
       ⌜(result ≠ interface.nil → result ∈ elems ∧ ¬R result key ∧ ¬R key result) ∧
        (result = interface.nil → ∀ e, e ∈ elems → R e key ∨ R key e)⌝ }}}.
-Proof. Admitted.
+Proof.
+  iLöb as "IH" forall (enforce_min height n elems).
+  wp_start as "(Hnode & #Hless & %Hkey_nn)".
+  destruct height as [|h]; simpl; iNamed "Hnode";
+    iDestruct (own_slice_len with "Hitems_own") as %Hitems_len.
+  - (* height = 0: leaf *)
+    iDestruct "Hchildren_rep" as %[Hcl_nil Hcs_nil].
+    wp_auto.
+    wp_apply (wp_items__find with "[$Hitems_own $Hless]").
+    { iFrame "%". }
+    iIntros (idx found) "(Hitems_own & %Hfind)".
+    wp_auto.
+    wp_if_destruct.
+    + (* found = true: return items[idx] *)
+      destruct Hfind as (e & Hlookup & Hne & Hnk).
+      (* STUCK: need to load items[idx] inside exception_do + exception_seq.
+         wp_pure fails ("Cannot find witness").
+         wp_load_slice_elem' fails ("iApply: cannot apply").
+         walk_expr doesn't traverse exception_seq/do_return contexts. *)
+      admit.
+    + (* found = false, leaf *)
+      destruct Hfind as [Hfind_below Hfind_above].
+      wp_if_destruct.
+      * (* len(children) > 0 — contradiction: leaf has [] children *)
+        iDestruct (own_slice_len with "Hchildren_own") as %Hcl_len.
+        exfalso. simpl in *. word.
+      * (* leaf, return nil — wp_auto resolves exception_do (return: #nil) *)
+        (* Postcondition: reassemble node_repr_aux, then show
+           ∀ e ∈ list_to_set items, R e key ∨ R key e
+           using Hfind_below (j < idx → R items[j] key)
+           and Hfind_above (j ≥ idx → R key items[j]). *)
+        admit.
+  - (* height = S h *)
+    wp_auto.
+    wp_apply (wp_items__find with "[$Hitems_own $Hless]").
+    { iFrame "%". }
+    iIntros (idx found) "(Hitems_own & %Hfind)".
+    wp_auto.
+    wp_if_destruct.
+    + (* found = true: same STUCK issue as height=0 *)
+      destruct Hfind as (e & Hlookup & Hne & Hnk).
+      admit.
+    + (* found = false *)
+      destruct Hfind as [Hfind_below Hfind_above].
+      wp_if_destruct.
+      * (* len(children) > 0 — recurse into children[idx].
+           Steps needed:
+           (1) Load children[idx] via wp_load_slice_elem on Hchildren_own.
+           (2) Extract idx-th child from [∗ list] Hchildren_rep
+               (big_sepL2_lookup_acc or similar).
+           (3) wp_apply "IH" with the child's node_repr_aux.
+           (4) Reassemble [∗ list] (put child back).
+           (5) Postcondition for result=nil: btree_ordering + transitivity. *)
+        admit.
+      * (* no children, return nil.
+           Postcondition: show ∀ e ∈ elems, R e key ∨ R key e.
+           Items: same as leaf case via Hfind_below/Hfind_above.
+           Children: need to show all e in ⋃ children_sets satisfy it,
+           but if no children (len=0), children_sets might still be nonempty
+           at height S h — need to argue from Hsize or similar. *)
+        admit.
+Admitted.
 
 (** ** BTree.Get *)
 
