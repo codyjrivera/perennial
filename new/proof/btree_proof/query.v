@@ -279,7 +279,36 @@ Lemma wp_BTree__Get R `{!RelDecision R, !Transitive R}
       btree_repr R t elems ∗
       ⌜(result ≠ interface.nil → result ∈ elems ∧ ¬R result key ∧ ¬R key result) ∧
        (result = interface.nil → ∀ e, e ∈ elems → R e key ∨ R key e)⌝ }}}.
-Proof. Admitted.
+Proof.
+  wp_start as "(Hbtree & #Hless & %Hkey_nn)".
+  iNamed "Hbtree".
+  wp_auto.
+  wp_if_destruct.
+  - (* root = null → return nil *)
+    iDestruct "Hroot" as %Hempty.
+    iApply "HΦ".
+    iSplitL.
+    { iExists degree_val, len_val, null, cow_loc.
+      iFrame. done. }
+    iPureIntro. split.
+    + intros Habs. exfalso. exact (Habs eq_refl).
+    + intros _ e He. subst elems. set_solver.
+  - (* root ≠ null → call node__get *)
+    iAssert (∃ height, node_repr height R root_loc elems (uint.Z degree_val))%I
+      with "[Hroot]" as (height) "Hroot".
+    { destruct (decide (root_loc = null)); [contradiction|iFrame]. }
+    wp_apply (wp_node__get with "[$Hroot $Hless]").
+    { iFrame "#". iPureIntro. exact Hkey_nn. }
+    iIntros (result) "(Hroot & %Hresult)".
+    wp_auto.
+    iApply "HΦ".
+    iSplitL.
+    { iExists degree_val, len_val, root_loc, cow_loc.
+      iFrame "∗ %".
+      destruct (decide (root_loc = null)); [contradiction|].
+      iExists height. iFrame. }
+    iPureIntro. exact Hresult.
+Qed.
 
 (** ** BTree.Has *)
 
@@ -294,6 +323,30 @@ Lemma wp_BTree__Has R `{!RelDecision R, !Transitive R}
   {{{ (b : bool), RET #b;
       btree_repr R t elems ∗
       ⌜b ↔ ∃ e, e ∈ elems ∧ ¬R e key ∧ ¬R key e⌝ }}}.
-Proof. Admitted.
+Proof.
+  wp_start as "(Hbtree & #Hless & %Hkey_nn)".
+  wp_auto.
+  wp_apply (wp_BTree__Get with "[$Hbtree $Hless]").
+  { iPureIntro. exact Hkey_nn. }
+  iIntros (result) "(Hbtree & %Hresult)".
+  destruct Hresult as [Hresult_found Hresult_nil].
+  wp_auto.
+  iApply "HΦ".
+  iFrame.
+  iPureIntro.
+  destruct (decide (result = interface.nil)) as [Hnil|Hnn].
+  - (* result = nil → b = false *)
+    rewrite Hnil. rewrite bool_decide_eq_true_2; [|done]. simpl.
+    split.
+    + intros [].
+    + intros (e & He & HnR1 & HnR2).
+      destruct (Hresult_nil Hnil e He); contradiction.
+  - (* result ≠ nil → b = true *)
+    rewrite bool_decide_eq_false_2; [|done]. simpl.
+    destruct (Hresult_found Hnn) as (Hin & HnR1 & HnR2).
+    split.
+    + intros _. exists result. eauto.
+    + intros _. done.
+Qed.
 
 End proof.
