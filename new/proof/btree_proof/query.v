@@ -91,7 +91,7 @@ Proof.
         { exact (Forall_lookup_1 _ _ _ _ Hitems_non_nil Hlookup). }
         congruence. }
     + (* found = false, leaf *)
-      destruct Hfind as [Hfind_below Hfind_above].
+      destruct Hfind as (Hidx_le & Hfind_below & Hfind_above).
       wp_if_destruct.
       * (* len(children) > 0 — contradiction: leaf has [] children *)
         iDestruct (own_slice_len with "Hchildren_own") as %Hcl_len.
@@ -139,7 +139,7 @@ Proof.
       { intros Habs. exfalso.
         exact (Forall_lookup_1 _ _ _ _ Hitems_non_nil Hlookup Habs). }
     + (* found = false *)
-      destruct Hfind as [Hfind_below Hfind_above].
+      destruct Hfind as (Hidx_le & Hfind_below & Hfind_above).
       wp_if_destruct.
       * (* len(children) > 0 — recurse into children[idx].
            Steps needed:
@@ -150,12 +150,12 @@ Proof.
            (4) Reassemble [∗ list] (put child back).
            (5) Postcondition for result=nil: btree_ordering + transitivity. *)
         iDestruct (own_slice_len with "Hchildren_own") as %Hcl_len.
-        (* idx < len(child_locs) because child_locs = items + 1 and idx ≤ len(items) *)
-        assert (uint.nat idx < length child_locs) as Hidx_child_bound.
-        { (* Need: idx ≤ len(items), len(child_locs) = len(items)+1.
-             Second follows from Hsize + len(children) > 0.
-             First needs to be added to items.find postcondition (0 ≤ idx ≤ len). *)
-          admit. }
+        (* child_locs = items + 1 (from Hsize + children > 0) *)
+        assert (length child_locs = (length items + 1)%nat) as Hcl_items.
+        { assert (length child_locs > 0)%nat by word.
+          destruct enforce_min; [destruct Hsize as [[? _]|[? _]]|destruct Hsize as [[?|?] _]]; lia. }
+        (* idx < len(child_locs) because idx ≤ len(items) from items.find *)
+        assert (uint.nat idx < length child_locs) as Hidx_child_bound by lia.
         assert (0 ≤ sint.Z idx < sint.Z children_sl.(slice.len_f)) as Hidx_cbound.
         { word. }
         list_elem child_locs (uint.nat idx) as child_loc.
@@ -199,14 +199,42 @@ Proof.
           apply elem_of_union_r. apply elem_of_union_list.
           exists child_set. split; eauto.
           apply list_elem_of_lookup_2 with (i := uint.nat idx). exact Hcs_lookup. }
-        { (* result = nil → ∀ e ∈ elems, R e key ∨ R key e
-             Items: Hfind_below/Hfind_above.
-             Children[idx]: IH result (Hresult_nil).
-             Children[j<idx]: ordering upper bound items[j] + Hfind_below + transitivity.
-             Children[j>idx]: ordering lower bound items[j-1] + Hfind_above + transitivity.
-             Needs: len(children_sets) = len(child_locs) (from Hcl_cs_len),
-                    j < len(items) or j-1 < len(items) for lookup existence. *)
-          admit. }
+        { (* result = nil → ∀ e ∈ elems, R e key ∨ R key e *)
+          intros Hnil e He.
+          apply elem_of_union in He as [He | He].
+          { (* e ∈ list_to_set items *)
+            apply elem_of_list_to_set in He.
+            apply list_elem_of_lookup_1 in He as [j Hj].
+            destruct (decide (j < uint.nat idx)%nat).
+            - left. eapply Hfind_below; eauto.
+            - right. eapply Hfind_above; eauto. lia. }
+          { (* e ∈ ⋃ children_sets *)
+            rewrite elem_of_union_list in He.
+            destruct He as (s & Hs_mem & He_in_s).
+            apply list_elem_of_lookup_1 in Hs_mem as [k Hk].
+            destruct Hordering as [Hupper Hlower].
+            destruct (decide (k < uint.nat idx)%nat).
+            - (* k < idx: upper bound + transitivity → R e key *)
+              left.
+              assert (∃ x_k, items !! k = Some x_k) as [x_k Hx_k]
+                by (apply lookup_lt_is_Some_2; lia).
+              eapply transitivity.
+              + exact (Hupper k s x_k Hk Hx_k e He_in_s).
+              + eapply Hfind_below; eauto.
+            - destruct (decide (k = uint.nat idx)).
+              + (* k = idx: from IH *)
+                subst k. rewrite Hk in Hcs_lookup. injection Hcs_lookup as <-.
+                exact (Hresult_nil Hnil e He_in_s).
+              + (* k > idx: lower bound + transitivity → R key e *)
+                right.
+                assert (k - 1 < length items)%nat.
+                { assert (k < length children_sets)%nat by (eapply lookup_lt_Some; eauto).
+                  lia. }
+                assert (∃ x_k1, items !! (k - 1)%nat = Some x_k1) as [x_k1 Hx_k1]
+                  by (apply lookup_lt_is_Some_2; lia).
+                eapply transitivity.
+                * eapply Hfind_above; eauto. lia.
+                * exact (Hlower k s x_k1 ltac:(lia) Hk Hx_k1 e He_in_s). } }
       * (* no children, return nil.
            Postcondition: show ∀ e ∈ elems, R e key ∨ R key e.
            Items: same as leaf case via Hfind_below/Hfind_above.
@@ -235,7 +263,7 @@ Proof.
           destruct (decide (j < uint.nat idx)%nat).
           - left. eapply Hfind_below; eauto.
           - right. eapply Hfind_above; eauto. lia. }
-Admitted.
+Qed.
 
 (** ** BTree.Get *)
 

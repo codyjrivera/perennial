@@ -48,6 +48,7 @@ Lemma wp_items__find (sl : slice.t) (items_list : list interface.t)
       ⌜if found then
          ∃ e, items_list !! uint.nat idx = Some e ∧ ¬R e key ∧ ¬R key e
        else
+         (uint.nat idx ≤ length items_list)%nat ∧
          (∀ j e, items_list !! j = Some e → (j < uint.nat idx)%nat → R e key) ∧
          (∀ j e, items_list !! j = Some e → (uint.nat idx ≤ j)%nat → R key e)⌝ }}}.
 Proof.
@@ -120,10 +121,10 @@ Proof.
     iIntros (b) "%Hb".
     wp_auto.
     wp_if_destruct.
-    + (* b=true, R xi_prev key → ~b=false → else branch → not found, return (i, false) *)
+    + (* b=true, R xi_prev key → not found, return (i, false) *)
       iApply "HΦ". iFrame. iPureIntro.
       assert (R xi_prev key) as Hprev_lt by naive_solver.
-      split.
+      split; [word|split].
       * intros j e Hj_lookup Hj_lt.
         destruct (decide (j = sint.nat (word.sub i (W64 1)))).
         { subst. replace e with xi_prev by
@@ -148,7 +149,7 @@ Proof.
             eapply transitivity; eauto.
             apply Hsorted with (i:=uint.nat i) (j:=j); try lia; eauto. } }
         { exfalso. apply lookup_lt_Some in Hj_lookup. word. }
-    + (* b=false, ¬R xi_prev key → ~b=true → then branch → found, return (i-1, true) *)
+    + (* b=false, ¬R xi_prev key → found, return (i-1, true) *)
       iApply "HΦ". iFrame. iPureIntro.
       assert (¬R xi_prev key) as Hnot_less by naive_solver.
       assert (¬R key xi_prev) as Hnot_less2.
@@ -161,7 +162,7 @@ Proof.
         (sint.nat (word.sub i (W64 1))) by word. eauto.
   - (* i = 0 — not found, return (i, false) *)
     iApply "HΦ". iFrame. iPureIntro.
-    split.
+    split; [word|split].
     + intros j e Hj_lookup Hj_lt. exfalso. word.
     + intros j e Hj_lookup Hj_ge.
       assert (uint.nat i = 0%nat) as Hi0 by word.
