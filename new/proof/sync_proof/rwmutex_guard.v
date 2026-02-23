@@ -1,14 +1,13 @@
 From New.proof.sync_proof Require Import base.
 From New.proof.sync_proof Require rwmutex.
-Local Existing Instances tokG wg_totalG rw_ghost_varG rw_ghost_wlG rw_ghost_rwmutexG  wg_auth_inG.
 
 (** A specification for RWMutex which guards a fractional resource [P q].
     [RLock] returns [P rfrac] while [Lock] returns [P 1]. *)
-Section proof.
-
-Context `{hG:heapGS Σ, !ffi_semantics _ _}.
-Context `{!globalsGS Σ} {go_ctx : GoContext}.
-Context `{!syncG Σ}.
+Section wps.
+Context `{hG: heapGS Σ, !ffi_semantics _ _}.
+Context {sem : go.Semantics} {package_sem : sync.Assumptions}.
+Collection W := sem + package_sem.
+Set Default Proof Using "W".
 
 Definition rfrac_def : Qp := / pos_to_Qp (Z.to_pos (rwmutex.actualMaxReaders + 1)).
 Program Definition rfrac := sealed @rfrac_def.
@@ -65,7 +64,7 @@ Instance : Inhabited rwmutex := {| inhabitant := Locked |}.
 
 Lemma wp_RWMutex__RLock rw P :
   {{{ is_pkg_init sync ∗ own_RWMutex rw P }}}
-    rw @ (ptrT.id sync.RWMutex.id) @ "RLock" #()
+    rw @! (go.PointerType sync.RWMutex) @! "RLock" #()
   {{{ RET #(); own_RWMutex_RLocked rw P ∗ ▷ P rfrac }}}.
 Proof.
   wp_start_folded as "Hpre". iNamed "Hpre".
@@ -97,7 +96,7 @@ Qed.
 
 Lemma wp_RWMutex__RUnlock rw P :
   {{{ is_pkg_init sync ∗ own_RWMutex_RLocked rw P ∗ ▷ P rfrac }}}
-    rw @ (ptrT.id sync.RWMutex.id) @ "RUnlock" #()
+    rw @! (go.PointerType sync.RWMutex) @! "RUnlock" #()
   {{{ RET #(); own_RWMutex rw P }}}.
 Proof.
   wp_start_folded as "[Ho HP_in]". iNamed "Ho".
@@ -131,7 +130,7 @@ Qed.
 
 Lemma wp_RWMutex__Lock rw P :
   {{{ is_pkg_init sync ∗ own_RWMutex rw P }}}
-    rw @ (ptrT.id sync.RWMutex.id) @ "Lock" #()
+    rw @! (go.PointerType sync.RWMutex) @! "Lock" #()
   {{{ RET #(); own_RWMutex_Locked rw P ∗ ▷ P 1%Qp }}}.
 Proof.
   wp_start_folded as "Ho". iNamed "Ho".
@@ -140,7 +139,9 @@ Proof.
   iDestruct "Hi" as (?) "[>Hstate HP]".
   iFrame. iApply fupd_mask_intro. { solve_ndisj. } iIntros "Hmask".
   iIntros "% Hst". subst.
-  rewrite rfrac_unseal. rewrite /rfrac_def Qp.mul_inv_r.
+  rewrite rfrac_unseal /rfrac_def.
+  replace (_ + _ - _) with (rwmutex.actualMaxReaders + 1) by lia.
+  rewrite Qp.mul_inv_r.
   iDestruct "HP" as "(? & ? & >Hl & HP)".
   iDestruct ("HΦ" with "[$]") as "$".
   iMod "Hmask" as "_".
@@ -149,7 +150,7 @@ Qed.
 
 Lemma wp_RWMutex__Unlock rw P :
   {{{ is_pkg_init sync ∗ own_RWMutex_Locked rw P ∗ ▷ P 1%Qp }}}
-    rw @ (ptrT.id sync.RWMutex.id) @ "Unlock" #()
+    rw @! (go.PointerType sync.RWMutex) @! "Unlock" #()
   {{{ RET #(); own_RWMutex rw P }}}.
 Proof.
   wp_start_folded as "[Ho HP_in]". iNamed "Ho".
@@ -165,16 +166,18 @@ Proof.
   iMod "Hmask" as "_".
   iMod ("Hclose" with "[-]"); last done.
   iFrame.
-  rewrite rfrac_unseal. rewrite /rfrac_def Qp.mul_inv_r. iFrame.
+  rewrite rfrac_unseal /rfrac_def.
+  replace (_ + _ - _) with (rwmutex.actualMaxReaders + 1) by lia.
+  rewrite Qp.mul_inv_r.
+  iFrame.
 Qed.
 
-Lemma init_RWMutex P {E} (rw : loc) :
-  □(∀ q1 q2, P (q1 + q2)%Qp ∗-∗ P q1 ∗ P q2) -∗
+Lemma init_RWMutex P {E} (rw : loc) {HPfrac : fractional.Fractional P} :
   ▷ P 1%Qp -∗
-  rw ↦ (default_val sync.RWMutex.t) ={E}=∗
+  rw ↦ (zero_val sync.RWMutex.t) ={E}=∗
   [∗] replicate (Z.to_nat rwmutex.actualMaxReaders) (own_RWMutex rw P).
 Proof.
-  iIntros "#HPfrac HP Hrw".
+  iIntros "HP Hrw".
   iMod (rwmutex.init_RWMutex (nroot.@"rw") with "[$]") as (?) "(#His & Hstate & Hrtoks)".
   iMod own_tok_auth_alloc as (γmax) "Hauth".
   iMod (own_tok_auth_add (Z.to_nat rwmutex.actualMaxReaders) with "Hauth") as "[Hauth Htoks]".
@@ -190,11 +193,19 @@ Proof.
   iDestruct (own_toks_add _ 1 with "Htoks") as "[? ?]".
   iDestruct "Hrtoks" as "[? ?]".
   iThaw "Hauth". iFrame "∗#".
+  iSplit.
+  { rewrite /fractional.Fractional in HPfrac.
+    iIntros "!> *".
+    by iDestruct equiv_wand_iff as "$". }
   iApply ("IHn" with "[$] [$]").
   Unshelve.
   2:{
-    iFrame. rewrite rfrac_unseal. rewrite /rfrac_def Qp.mul_inv_r. iFrame.
+    iFrame.
+    rewrite rfrac_unseal /rfrac_def.
+    replace (_ + _ - _) with (rwmutex.actualMaxReaders + 1) by lia.
+    rewrite Qp.mul_inv_r.
+    iFrame.
   }
 Qed.
 
-End proof.
+End wps.

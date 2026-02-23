@@ -1,46 +1,49 @@
 Require Export New.generatedproof.go_etcd_io.etcd.pkg.v3.wait.
-From New.golang.theory Require Import chan_old.
 Require Export New.proof.proof_prelude.
 From New.proof Require Import log sync.
+From New.proof.github_com.goose_lang.goose.model.channel
+  Require Import logatom.chan_au_base idiom.handoff.handoff.
 
 Section wps.
 Context `{hG: heapGS Σ, !ffi_semantics _ _}.
-Context `{!globalsGS Σ} {go_ctx : GoContext}.
+Context {sem : go.Semantics} {package_sem : wait.Assumptions}.
+Collection W := sem + package_sem.
+Set Default Proof Using "W".
 
-#[global] Instance : IsPkgInit wait := define_is_pkg_init True%I.
+#[global] Instance : IsPkgInit (iProp Σ) wait := define_is_pkg_init True%I.
+#[global] Instance : GetIsPkgInitWf (iProp Σ) wait := build_get_is_pkg_init_wf.
 
 Record wait_params :=
   {
     I : iProp Σ;
     own_unregistered_id : w64 → iProp Σ;
   }.
+
+Local Notation interface_call i m := #(methods i.(interface.ty) m i.(interface.v)).
+
 (* This is non-duplicable so that ownership of the internal [I] can rule out
    overflow. This also permits non-concurrent implementations. *)
-Definition own_Wait γ (w : wait.Wait.t) R : iProp Σ :=
+Definition own_Wait γ w R : iProp Σ :=
     "HI" ∷ I γ ∗
     "#Register" ∷
       (∀ (id' : w64),
          {{{ I γ ∗ own_unregistered_id γ id' }}}
-           interface.get #"Register" #w #id'
-         {{{ ch, RET #ch;
+           interface_call w "Register" #id'
+         {{{ ch γch, RET #ch;
              I γ ∗
-             |={⊤,∅}=>
-               ∃ (st : chanstate.t interface.t),
-               own_chan ch st ∗
-               (∀ v, ⌜ v ∈ drop st.(chanstate.received) st.(chanstate.sent) ⌝ → R id' v) ∗
-               (∀ r, own_chan ch (set chanstate.received (Nat.add r) st) ={⊤,∅}=∗ True)
-         }}}
-      ) ∗
+             is_chan ch γch interface.t ∗
+             (∀ Φ, (∀ v, R id' v -∗ Φ v true) -∗ recv_au γch any.t Φ)
+         }}}) ∗
     "#Trigger" ∷
       (∀ (id' : w64) (x : interface.t),
          {{{ I γ ∗ R id' x }}}
-           interface.get #"Trigger" #w #id' #x
+           interface_call w "Trigger" #id' #x
          {{{ RET #(); I γ }}}
       ) ∗
     "#IsRegistered" ∷
       (∀ (id' : w64),
          {{{ I γ }}}
-           interface.get #"IsRegistered" #w #id'
+           interface_call w "IsRegistered" #id'
          {{{ (reg : bool), RET #reg; I γ }}}
       ).
 #[global] Opaque own_Wait.
@@ -48,23 +51,20 @@ Definition own_Wait γ (w : wait.Wait.t) R : iProp Σ :=
 
 Lemma wp_Wait__Register γ w (id' : w64) R :
   {{{ is_pkg_init wait ∗ own_Wait γ w R ∗ own_unregistered_id γ id' }}}
-    interface.get #"Register" #w #id'
-  {{{ ch, RET #ch;
+    interface_call w "Register" #id'
+  {{{ ch γch, RET #ch;
+      is_chan ch γch interface.t ∗
       own_Wait γ w R ∗
-      |={⊤,∅}=>
-        ∃ (st : chanstate.t interface.t),
-        own_chan ch st ∗
-        (∀ v, ⌜ v ∈ drop st.(chanstate.received) st.(chanstate.sent) ⌝ → R id' v) ∗
-        (∀ r, own_chan ch (set chanstate.received (Nat.add r) st) ={⊤,∅}=∗ True)
+      (∀ Φ, (∀ v, R id' v -∗ Φ v true) -∗ recv_au γch any.t Φ)
   }}}.
 Proof.
   wp_start as "[Hw Hid]". iNamed "Hw".
-  iApply ("Register" with "[$]"). iIntros "!> * [I post]". iApply "HΦ". iFrame "∗#".
+  iApply ("Register" with "[$]"). iIntros "!> * [I post]". iApply "HΦ". iFrame "∗#". iFrame.
 Qed.
 
 Lemma wp_Wait__Trigger γ w (id' : w64) (x : interface.t) R :
   {{{ is_pkg_init wait ∗ own_Wait γ w R ∗ R id' x }}}
-    interface.get #"Trigger" #w #id' #x
+    interface_call w "Trigger" #id' #x
   {{{ RET #(); own_Wait γ w R }}}.
 Proof.
   wp_start as "[Hw HR]". iNamed "Hw".
@@ -73,7 +73,7 @@ Qed.
 
 Lemma wp_Wait__IsRegistered γ w (id' : w64) R :
   {{{ is_pkg_init wait ∗ own_Wait γ w R }}}
-    interface.get #"IsRegistered" #w #id'
+    interface_call w "IsRegistered" #id'
   {{{ (reg : bool), RET #reg; own_Wait γ w R }}}.
 Proof.
   wp_start as "Hw". iNamed "Hw".

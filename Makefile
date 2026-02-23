@@ -1,5 +1,5 @@
-SRC_DIRS := 'src' 'external' 'new'
-# ALL_VFILES is used to calculate dependencies so includes external
+SRC_DIRS := 'src' 'new'
+# ALL_VFILES is used to calculate dependencies
 ALL_VFILES := $(shell find $(SRC_DIRS) \
 	-type f -not -name "*__nobuild.v" -name "*.v")
 # PROJ_VFILES is for the all target
@@ -32,7 +32,7 @@ else
 ROCQ_C := rocq compile
 endif
 
-default: src/ShouldBuild.vo
+default: all
 
 all: $(PROJ_VFILES:.v=.vo)
 vos: $(PROJ_VFILES:.v=.vos)
@@ -43,19 +43,6 @@ new-goose:
 	$(Q)$(MAKE) $$(./etc/package-sources.sh new-goose | sed 's/\.v$$/\.vo/')
 new-goose.vos:
 	$(Q)$(MAKE) $$(./etc/package-sources.sh new-goose | sed 's/\.v$$/\.vos/')
-
-.PHONY: old-goose old-goose.vos
-old-goose:
-	$(Q)$(MAKE) $$(./etc/package-sources.sh old-goose | sed 's/\.v$$/\.vo/')
-old-goose.vos:
-	$(Q)$(MAKE) $$(./etc/package-sources.sh old-goose | sed 's/\.v$$/\.vos/')
-
-check-assumptions: \
-	src/program_proof/examples/print_assumptions.vo \
-	src/program_proof/simple/print_assumptions.vo \
-	src/program_proof/mvcc/print_assumptions.vo \
-	src/program_proof/memkv/print_assumptions.vo \
-	src/program_proof/vrsm/apps/print_assumptions.vo
 
 .rocqdeps.d: $(ALL_VFILES) _RocqProject
 	@echo "ROCQ DEP $@"
@@ -88,10 +75,7 @@ endif
 
 .PHONY: skip-qed unskip-qed ci
 
-SLOW_QED_FILES := src/goose_lang/interpreter/disk_interpreter.v\
-	src/goose_lang/interpreter/interpreter.v\
-	src/goose_lang/logical_reln_fund.v\
-	$(shell find src/program_proof/ -name "*.v" )
+SLOW_QED_FILES := ""
 
 skip-qed:
 	$(Q)./etc/disable-qed.sh $(SLOW_QED_FILES)
@@ -99,7 +83,7 @@ skip-qed:
 unskip-qed:
 	$(Q)./etc/disable-qed.sh --undo $(SLOW_QED_FILES)
 
-ci: skip-qed src/ShouldBuild.vo
+ci: new/should_build.vo
 
 # compiled by Rocq CI
 # not intended for normal development
@@ -108,7 +92,7 @@ lite: src/LiteBuild.vo
 clean:
 	@echo "CLEAN vo glob aux"
 	$(Q)find $(SRC_DIRS) tests \( -name "*.vo" -o -name "*.vo[sk]" \
-		-o -name ".*.aux" -o -name ".*.cache" -name "*.glob" \) -delete
+		-o -name ".*.aux" -o -name ".*.cache" -o -name "*.glob" \) -delete
 	$(Q)rm -f .lia.cache
 	$(Q)rm -f $(TIMING_DB)
 	rm -f .rocqdeps.d tests/.rocqdeps.d
