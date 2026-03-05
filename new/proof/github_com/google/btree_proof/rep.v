@@ -81,17 +81,19 @@ Fixpoint node_repr_aux (enforce_min : bool) (height : nat)
     (R : interface.t → interface.t → Prop)
     (n : loc) (elems : gset interface.t) (degree : Z)
     {struct height} : iProp Σ :=
-  ∃ (node_val : btree.node.t)
+  ∃ (items_sl children_sl : slice.t) (cow_val : loc)
     (items_list : list interface.t)
     (child_locs : list loc)
     (children_sets : list (gset interface.t)),
 
-    (* ---- spatial: struct ownership ---- *)
-    "Hnode" ∷ n ↦ node_val ∗
+    (* ---- spatial: per-field struct ownership ---- *)
+    "Hitems" ∷ n.[btree.node.t, "items"] ↦ items_sl ∗
+    "Hchildren" ∷ n.[btree.node.t, "children"] ↦ children_sl ∗
+    "Hcow" ∷ n.[btree.node.t, "cow"] ↦ cow_val ∗
 
     (* ---- spatial: slice contents ---- *)
-    "Hitems_own" ∷ node_val.(btree.node.items') ↦* items_list ∗
-    "Hchildren_own" ∷ node_val.(btree.node.children') ↦* child_locs ∗
+    "Hitems_own" ∷ items_sl ↦* items_list ∗
+    "Hchildren_own" ∷ children_sl ↦* child_locs ∗
 
     (* ---- recursive: children (always enforce min) ---- *)
     "Hchildren_rep" ∷ (match height with
@@ -102,6 +104,9 @@ Fixpoint node_repr_aux (enforce_min : bool) (height : nat)
 
     (* ---- pure: element set ---- *)
     "%Helems" ∷ ⌜elems = list_to_set items_list ∪ ⋃ children_sets⌝ ∗
+
+    (* ---- pure: no nil items (needed to call Less via is_less_fn) ---- *)
+    "%Hitems_non_nil" ∷ ⌜Forall (λ x, x ≠ interface.nil) items_list⌝ ∗
 
     (* ---- pure: sorted ---- *)
     "%Hsorted" ∷ ⌜items_sorted R items_list⌝ ∗
@@ -139,21 +144,24 @@ Definition node_repr_interior := node_repr_aux true.
 
 Definition btree_repr (R : interface.t → interface.t → Prop)
     (t : loc) (elems : gset interface.t) : iProp Σ :=
-  ∃ (btree_val : btree.BTree.t),
-    (* ---- spatial: BTree struct ownership ---- *)
-    "Hbtree" ∷ t ↦ btree_val ∗
+  ∃ (degree_val length_val : w64) (root_val cow_val : loc),
+    (* ---- spatial: per-field BTree struct ownership ---- *)
+    "Hdegree" ∷ t.[btree.BTree.t, "degree"] ↦ degree_val ∗
+    "Hlength" ∷ t.[btree.BTree.t, "length"] ↦ length_val ∗
+    "Hroot_pt" ∷ t.[btree.BTree.t, "root"] ↦ root_val ∗
+    "Hcow" ∷ t.[btree.BTree.t, "cow"] ↦ cow_val ∗
 
     (* ---- pure: degree validity ---- *)
-    "%Hdegree_pos" ∷ ⌜(1 < uint.Z btree_val.(btree.BTree.degree'))%Z⌝ ∗
+    "%Hdegree_pos" ∷ ⌜(1 < uint.Z degree_val)%Z⌝ ∗
 
     (* ---- pure: length tracks set cardinality ---- *)
-    "%Hlen" ∷ ⌜uint.Z btree_val.(btree.BTree.length') = Z.of_nat (size elems)⌝ ∗
+    "%Hlen" ∷ ⌜uint.Z length_val = Z.of_nat (size elems)⌝ ∗
 
     (* ---- root: null means empty, otherwise node_repr (relaxed) ---- *)
-    "Hroot" ∷ (if decide (btree_val.(btree.BTree.root') = null) then
+    "Hroot" ∷ (if decide (root_val = null) then
                  ⌜elems = ∅⌝
                else
-                 ∃ height, node_repr height R btree_val.(btree.BTree.root')
-                                     elems (uint.Z btree_val.(btree.BTree.degree'))).
+                 ∃ height, node_repr height R root_val
+                                     elems (uint.Z degree_val)).
 
 End proof.

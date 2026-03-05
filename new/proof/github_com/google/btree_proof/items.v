@@ -34,17 +34,16 @@ Proof.
   rewrite /find_f. intros ->. rewrite bool_decide_eq_false //.
 Qed.
 
-(** [items.find] now obtains the ordering from the [Item.Less] interface
-    method rather than a separate [less_fn] parameter. *)
 Lemma wp_items__find (sl : slice.t) (items_list : list interface.t)
-    (key : interface.t)
-    (R : interface.t → interface.t → Prop)
+    (key : interface.t) (R : interface.t → interface.t → Prop)
     `{!RelDecision R, !Transitive R} :
   {{{ is_pkg_init btree ∗
       sl ↦* items_list ∗
       is_less_fn R ∗
-      ⌜items_sorted R items_list⌝ }}}
-    sl @! (btree.items) @! "find" #key
+      ⌜items_sorted R items_list⌝ ∗
+      ⌜key ≠ interface.nil⌝ ∗
+      ⌜Forall (λ x, x ≠ interface.nil) items_list⌝ }}}
+    sl @! btree.items @! "find" #key
   {{{ (idx : w64) (found : bool), RET (#idx, #found);
       sl ↦* items_list ∗
       ⌜if found then
@@ -53,6 +52,151 @@ Lemma wp_items__find (sl : slice.t) (items_list : list interface.t)
          (uint.nat idx ≤ length items_list)%nat ∧
          (∀ j e, items_list !! j = Some e → (j < uint.nat idx)%nat → R e key) ∧
          (∀ j e, items_list !! j = Some e → (uint.nat idx ≤ j)%nat → R key e)⌝ }}}.
-Proof. Admitted.
+Proof.
+  wp_start as "(Hsl & #Hless & %Hsorted & %Hkey_nn & %Hnn)".
+  iDestruct (own_slice_len with "Hsl") as %Hlen.
+  wp_auto.
+
+  (* Apply sort.Search *)
+  set (f := find_f R key items_list).
+  set (I := (s_ptr ↦ sl ∗ item_ptr ↦ key ∗ sl ↦* items_list)%I).
+  wp_apply (wp_Search _ _ f I with "[Hsl s item]").
+  {
+    iFrame.
+    iSplit.
+    { iPureIntro. word. }
+    iSplit.
+    - (* pred_implements: closure body loads items[i], calls key.Less(items[i]) *)
+      iIntros (idx_w). wp_start as "((Hs & Hitem & Hsl) & %Hbound)".
+      wp_auto. wp_bind. wp_alloc i_loc as "Hi".
+      wp_auto. wp_bind.
+      list_elem items_list (sint.Z idx_w) as xi.
+      rewrite -> decide_True; last word.
+      wp_auto. wp_bind.
+      wp_apply (wp_load_slice_index with "[$Hsl]") as "Hsl".
+      { word. }
+      { iPureIntro. exact Hxi_lookup. }
+      assert (xi ≠ interface.nil) as Hxi_nn
+        by (eapply (Forall_lookup_1 _ _ _ _ Hnn Hxi_lookup)).
+      (* key.Less(xi) — key is receiver, xi is argument *)
+      destruct key as [k|]; [|contradiction].
+      wp_bind.
+      wp_apply "Hless".
+      iIntros (b) "%Hb".
+      wp_auto.
+      iApply "HΦ". iFrame. iPureIntro.
+      rewrite /f /find_f.
+      replace (Z.to_nat (sint.Z idx_w)) with (sint.nat idx_w) by word.
+      rewrite Hxi_lookup.
+      destruct b; symmetry.
+      + apply bool_decide_eq_true. apply Hb. done.
+      + apply bool_decide_eq_false. intro. apply Hb. done.
+    - iPureIntro.
+      (* is_mono_pred *)
+      rewrite /is_mono_pred /f /find_f.
+      intros i j (Hi & Hij & Hj) Hfi.
+      list_elem items_list (Z.to_nat i) as xi.
+      list_elem items_list (Z.to_nat j) as xj.
+      rewrite Hxi_lookup in Hfi.
+      rewrite Hxj_lookup.
+      apply bool_decide_eq_true in Hfi.
+      apply bool_decide_eq_true.
+      eapply transitivity; eauto.
+      apply Hsorted with (i:=Z.to_nat i) (j:=Z.to_nat j); try lia; eauto.
+  }
+
+  (* Post-Search *)
+  iIntros (i) "(HI & %Hi_nn & %Hfound & %Hoob & %Hbelow)".
+  iDestruct "HI" as "(Hs & Hitem & Hsl)".
+  wp_auto.
+
+  assert (sint.Z i ≤ sint.Z sl.(slice.len)) as Hi_le.
+  { destruct (decide (sint.Z i < sint.Z sl.(slice.len))); [lia|].
+    assert (sint.Z i = sint.Z sl.(slice.len)); [|lia].
+    apply Hoob. intros k Hk. apply Hbelow. lia. }
+
+  wp_if_destruct.
+  - (* i > 0 — check !items[i-1].Less(key) *)
+    list_elem items_list (sint.nat (word.sub i (W64 1))) as xi_prev.
+    rewrite -> decide_True; last word.
+    wp_bind (![_] _)%E.
+    wp_apply (wp_load_slice_index with "[$Hsl]") as "Hsl".
+    { word. }
+    { iPureIntro.
+      replace (Z.to_nat (sint.Z (word.sub i (W64 1)))) with
+        (sint.nat (word.sub i (W64 1))) by word.
+      exact Hxi_prev_lookup. }
+    assert (xi_prev ≠ interface.nil) as Hxi_prev_nn
+        by (eapply (Forall_lookup_1 _ _ _ _ Hnn Hxi_prev_lookup)).
+    (* items[i-1].Less(key) — xi_prev is receiver, key is argument *)
+    destruct xi_prev as [xi_prev_ok|]; [|contradiction].
+    wp_bind.
+    wp_apply ("Hless" $! xi_prev_ok key with "[//]").
+    iIntros (b) "%Hb".
+    wp_auto.
+    wp_if_destruct.
+    + (* b=true, R xi_prev key → not found, return (i, false) *)
+      iApply "HΦ". iFrame. iPureIntro.
+      assert (R (interface.ok xi_prev_ok) key) as Hprev_lt by naive_solver.
+      split; [word|split].
+      * intros j e Hj_lookup Hj_lt.
+        destruct (decide (j = sint.nat (word.sub i (W64 1)))).
+        { subst. replace e with (interface.ok xi_prev_ok) by
+            (rewrite Hxi_prev_lookup in Hj_lookup; congruence). done. }
+        { eapply transitivity; eauto.
+          apply Hsorted with (i:=j) (j:=sint.nat (word.sub i (W64 1)));
+            try word; eauto. }
+      * intros j e Hj_lookup Hj_ge.
+        destruct (decide (sint.Z i < sint.Z sl.(slice.len))).
+        { assert (find_f R key items_list (sint.Z i) = true) as Hfi
+            by (apply Hfound; word).
+          destruct (decide (j = uint.nat i)).
+          { subst. rewrite /f /find_f in Hfi.
+            replace (Z.to_nat (sint.Z i)) with (uint.nat i) in Hfi by word.
+            rewrite Hj_lookup in Hfi.
+            apply bool_decide_eq_true in Hfi. done. }
+          { list_elem items_list (uint.nat i) as x_i.
+            assert (R key x_i).
+            { apply (find_f_true R key items_list (sint.Z i) x_i).
+              { replace (Z.to_nat (sint.Z i)) with (uint.nat i) by word. eauto. }
+              apply Hfound. word. }
+            eapply transitivity; eauto.
+            apply Hsorted with (i:=uint.nat i) (j:=j); try lia; eauto. } }
+        { exfalso. apply lookup_lt_Some in Hj_lookup. word. }
+    + (* b=false, ¬R xi_prev key → found, return (i-1, true) *)
+      iApply "HΦ". iFrame. iPureIntro.
+      assert (¬R (interface.ok xi_prev_ok) key) as Hnot_less by naive_solver.
+      assert (¬R key (interface.ok xi_prev_ok)) as Hnot_less2.
+      { apply (find_f_false R key items_list (sint.Z (word.sub i (W64 1)))
+                 (interface.ok xi_prev_ok)).
+        { replace (Z.to_nat (sint.Z (word.sub i (W64 1)))) with
+            (sint.nat (word.sub i (W64 1))) by word. eauto. }
+        apply Hbelow. word. }
+      exists (interface.ok xi_prev_ok). split; [|split]; eauto.
+      replace (uint.nat (word.sub i (W64 1))) with
+        (sint.nat (word.sub i (W64 1))) by word. eauto.
+  - (* i = 0 — not found, return (i, false) *)
+    iApply "HΦ". iFrame. iPureIntro.
+    split; [word|split].
+    + intros j e Hj_lookup Hj_lt. exfalso. word.
+    + intros j e Hj_lookup Hj_ge.
+      assert (uint.nat i = 0%nat) as Hi0 by word.
+      destruct (decide (sint.Z i < sint.Z sl.(slice.len))).
+      { assert (find_f R key items_list (sint.Z i) = true) as Hfi
+          by (apply Hfound; word).
+        destruct (decide (j = 0%nat)).
+        { subst. rewrite /f /find_f in Hfi.
+          replace (Z.to_nat (sint.Z i)) with 0%nat in Hfi by word.
+          rewrite Hj_lookup in Hfi.
+          apply bool_decide_eq_true in Hfi. done. }
+        { list_elem items_list (0%nat) as x0.
+          assert (R key x0).
+          { apply (find_f_true R key items_list (sint.Z i) x0).
+            { replace (Z.to_nat (sint.Z i)) with 0%nat by word. eauto. }
+            apply Hfound. word. }
+          eapply transitivity; eauto.
+          apply Hsorted with (i:=0%nat) (j:=j); try word; eauto. } }
+      { exfalso. apply lookup_lt_Some in Hj_lookup. word. }
+Qed.
 
 End proof.
