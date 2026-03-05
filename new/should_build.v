@@ -8,7 +8,7 @@ From Perennial.Helpers Require
 
 (* stdlib. *)
 From New.proof Require Import
-  btree bytes context errors fmt io log math runtime slices sort strings
+  bytes context errors fmt io log math runtime slices sort strings
   sync time unsafe.
 From New.proof.crypto Require Import ed25519.
 From New.proof.encoding Require Import binary.
@@ -20,6 +20,7 @@ From New.generatedproof Require math.rand testing.
 
 (* common external pkgs. *)
 From New.proof.github_com.tchajed Require Import marshal.
+From New.proof.github_com.google Require Import btree.
 From New.proof.github_com.goose_lang Require Import primitive std.
 From New.proof.github_com.goose_lang.primitive Require Import disk.
 

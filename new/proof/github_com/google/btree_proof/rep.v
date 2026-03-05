@@ -1,6 +1,6 @@
-From New.generatedproof Require Import btree.
+From New.generatedproof.github_com.google Require Import btree.
 From New.proof Require Import proof_prelude.
-From New.proof.btree_proof Require Import btree_init.
+From New.proof.github_com.google.btree_proof Require Import btree_init.
 
 (** * Representation invariant for btree.node
 
@@ -10,7 +10,9 @@ From New.proof.btree_proof Require Import btree_init.
 *)
 
 Section proof.
-Context `{hG: heapGS Σ, !ffi_semantics _ _} `{!globalsGS Σ} {go_ctx: GoContext}.
+Context `{hG: heapGS Σ, !ffi_semantics _ _}.
+Context {sem : go.Semantics} {package_sem : btree.Assumptions}.
+Collection W := sem + package_sem.
 
 (** ** Pure definitions *)
 
@@ -45,23 +47,25 @@ Definition btree_ordering (R : interface.t → interface.t → Prop)
     items !! (i - 1)%nat = Some x →
     ∀ e, e ∈ s → R x e).
 
-(** ** Ordering interface
+(** ** Less function spec
 
-    [is_less_order R] asserts that the [Less] method on [interface.t] items
-    correctly implements the abstract relation [R].  This is persistent and
+    [is_less_fn R] asserts that the [Less] method correctly
+    implements the abstract relation [R].  This is persistent and
     intended to be shared across all btree operations. *)
 
-Definition is_less_order (R : interface.t → interface.t → Prop) : iProp Σ :=
-  □ ∀ (x y : interface.t),
-    ⌜x ≠ interface.nil⌝ -∗ ⌜y ≠ interface.nil⌝ -∗
+(** [is_less_fn R] asserts that the [Less] interface method on any
+    non-nil [Item] correctly implements the abstract relation [R].
+    This is persistent. *)
+Definition is_less_fn (R : interface.t → interface.t → Prop) : iProp Σ :=
+  □ ∀ (i : interface.t_ok) (y : interface.t),
     {{{ True }}}
-      (interface.get #"Less"%go #x) #y
-    {{{ (b : bool), RET #b; ⌜b ↔ R x y⌝ }}}.
+      #(methods i.(interface.ty) "Less"%go i.(interface.v)) #y
+    {{{ (b : bool), RET #b; ⌜b ↔ R (interface.ok i) y⌝ }}}.
 
 (** ** Node representation invariant
 
-    [node_repr_aux enforce_min height R n elems degree] asserts that [n : loc]
-    points to a [btree.node] whose element set is [elems].
+    [node_repr_aux enforce_min height R n elems degree] asserts that
+    [n : loc] points to a [btree.node] whose element set is [elems].
 
     When [enforce_min] is [true], minimum occupancy constraints are imposed
     (for interior/non-root nodes).  When [false], only the maximum is
@@ -77,18 +81,17 @@ Fixpoint node_repr_aux (enforce_min : bool) (height : nat)
     (R : interface.t → interface.t → Prop)
     (n : loc) (elems : gset interface.t) (degree : Z)
     {struct height} : iProp Σ :=
-  ∃ (items_sl children_sl : slice.t)
-    (items : list interface.t)
+  ∃ (node_val : btree.node.t)
+    (items_list : list interface.t)
     (child_locs : list loc)
     (children_sets : list (gset interface.t)),
 
-    (* ---- spatial: struct field ownership ---- *)
-    "Hitems_field" ∷ n ↦s[btree.node :: "items"] items_sl ∗
-    "Hchildren_field" ∷ n ↦s[btree.node :: "children"] children_sl ∗
+    (* ---- spatial: struct ownership ---- *)
+    "Hnode" ∷ n ↦ node_val ∗
 
     (* ---- spatial: slice contents ---- *)
-    "Hitems_own" ∷ items_sl ↦* items ∗
-    "Hchildren_own" ∷ children_sl ↦* child_locs ∗
+    "Hitems_own" ∷ node_val.(btree.node.items') ↦* items_list ∗
+    "Hchildren_own" ∷ node_val.(btree.node.children') ↦* child_locs ∗
 
     (* ---- recursive: children (always enforce min) ---- *)
     "Hchildren_rep" ∷ (match height with
@@ -98,36 +101,25 @@ Fixpoint node_repr_aux (enforce_min : bool) (height : nat)
       end) ∗
 
     (* ---- pure: element set ---- *)
-    "%Helems" ∷ ⌜elems = list_to_set items ∪ ⋃ children_sets⌝ ∗
-
-    (* ---- pure: no nil items (needed to call Less via is_less_order) ---- *)
-    "%Hitems_non_nil" ∷ ⌜Forall (λ x, x ≠ interface.nil) items⌝ ∗
+    "%Helems" ∷ ⌜elems = list_to_set items_list ∪ ⋃ children_sets⌝ ∗
 
     (* ---- pure: sorted ---- *)
-    "%Hsorted" ∷ ⌜items_sorted R items⌝ ∗
+    "%Hsorted" ∷ ⌜items_sorted R items_list⌝ ∗
 
-    (* ---- pure: B-tree size invariants ----
-       With [enforce_min]:
-         Leaf:     len(items) ≤ degree - 1, no children.
-         Internal: degree - 1 < len(items) < 2 * degree - 1,
-                   len(children) = len(items) + 1.
-       Without [enforce_min] (root):
-         Either a leaf (no children) or internal
-         (len(children) = len(items) + 1), with only the
-         max-items bound. *)
+    (* ---- pure: B-tree size invariants ---- *)
     "%Hsize" ∷ ⌜if enforce_min then
                   ((length child_locs = 0 ∧
-                    length items ≤ Z.to_nat (degree - 1)) ∨
-                  (length child_locs = length items + 1 ∧
-                   Z.to_nat (degree - 1) < length items ∧
-                   length items < Z.to_nat (2 * degree - 1)))%nat
+                    length items_list ≤ Z.to_nat (degree - 1)) ∨
+                  (length child_locs = length items_list + 1 ∧
+                   Z.to_nat (degree - 1) < length items_list ∧
+                   length items_list < Z.to_nat (2 * degree - 1)))%nat
                 else
                   ((length child_locs = 0 ∨
-                    length child_locs = length items + 1) ∧
-                   length items < Z.to_nat (2 * degree - 1))%nat⌝ ∗
+                    length child_locs = length items_list + 1) ∧
+                   length items_list < Z.to_nat (2 * degree - 1))%nat⌝ ∗
 
     (* ---- pure: ordering ---- *)
-    "%Hordering" ∷ ⌜btree_ordering R items children_sets⌝.
+    "%Hordering" ∷ ⌜btree_ordering R items_list children_sets⌝.
 
 (** [node_repr] is the relaxed version without minimum occupancy,
     suitable for the root node and for specs of methods that do not
@@ -140,30 +132,28 @@ Definition node_repr_interior := node_repr_aux true.
 
 (** ** BTree representation invariant
 
-    [btree_repr R t elems] asserts that [t : loc] points to a [btree.BTree]
-    struct representing the set [elems], ordered by [R].
+    [btree_repr R t elems] asserts that [t : loc] points to a
+    [btree.BTree] struct representing the set [elems], ordered by [R].
 
     Copy-on-write is ignored: the [cow] field is owned but unconstrained. *)
 
 Definition btree_repr (R : interface.t → interface.t → Prop)
     (t : loc) (elems : gset interface.t) : iProp Σ :=
-  ∃ (degree_val len_val : w64) (root_loc cow_loc : loc),
-    (* ---- spatial: BTree struct fields ---- *)
-    "Hdegree" ∷ t ↦s[btree.BTree :: "degree"] degree_val ∗
-    "Hlength" ∷ t ↦s[btree.BTree :: "length"] len_val ∗
-    "Hroot_field" ∷ t ↦s[btree.BTree :: "root"] root_loc ∗
-    "Hcow_field" ∷ t ↦s[btree.BTree :: "cow"] cow_loc ∗
+  ∃ (btree_val : btree.BTree.t),
+    (* ---- spatial: BTree struct ownership ---- *)
+    "Hbtree" ∷ t ↦ btree_val ∗
 
     (* ---- pure: degree validity ---- *)
-    "%Hdegree_pos" ∷ ⌜(1 < uint.Z degree_val)%Z⌝ ∗
+    "%Hdegree_pos" ∷ ⌜(1 < uint.Z btree_val.(btree.BTree.degree'))%Z⌝ ∗
 
     (* ---- pure: length tracks set cardinality ---- *)
-    "%Hlen" ∷ ⌜uint.Z len_val = Z.of_nat (size elems)⌝ ∗
+    "%Hlen" ∷ ⌜uint.Z btree_val.(btree.BTree.length') = Z.of_nat (size elems)⌝ ∗
 
     (* ---- root: null means empty, otherwise node_repr (relaxed) ---- *)
-    "Hroot" ∷ (if decide (root_loc = null) then
+    "Hroot" ∷ (if decide (btree_val.(btree.BTree.root') = null) then
                  ⌜elems = ∅⌝
                else
-                 ∃ height, node_repr height R root_loc elems (uint.Z degree_val)).
+                 ∃ height, node_repr height R btree_val.(btree.BTree.root')
+                                     elems (uint.Z btree_val.(btree.BTree.degree'))).
 
 End proof.
