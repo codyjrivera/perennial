@@ -308,4 +308,213 @@ Proof.
     + intros _. done.
 Qed.
 
+(** ** min *)
+
+Lemma wp_min enforce_min height R
+    (n : loc) (elems : gset interface.t) (degree : Z) :
+  {{{ is_pkg_init btree ∗
+      node_repr_aux enforce_min height R n elems degree ∗
+      ⌜n ≠ null⌝ }}}
+    (FuncResolve btree.min [] #()) #n
+  {{{ (result : interface.t), RET #result;
+      node_repr_aux enforce_min height R n elems degree ∗
+      ⌜result ≠ interface.nil →
+        result ∈ elems ∧ ∀ e, e ∈ elems → ¬R e result⌝ }}}.
+Proof.
+  (*wp_start as "(Hnode & %Hnn)".
+  wp_auto. wp_func_call. wp_call. wp_auto.
+  rewrite bool_decide_false //.
+  wp_auto.
+  (* Loop invariant: cur node's subtree contains the min of elems *)
+  iAssert (
+    ∃ (cur : loc) (em : bool) (h : nat) (cur_elems : gset interface.t),
+      "n" ∷ n_ptr ↦ cur ∗
+      "Hcur" ∷ node_repr_aux em h R cur cur_elems degree ∗
+      "Hclose" ∷ (node_repr_aux em h R cur cur_elems degree -∗
+                   node_repr_aux enforce_min height R n elems degree) ∗
+      "%Hmin_pres" ∷ ⌜∀ m, m ∈ elems → (∀ e, e ∈ elems → ¬R e m) →
+                        m ∈ cur_elems ∧ (∀ e, e ∈ cur_elems → ¬R e m)⌝
+  )%I with "[n Hnode]" as "HI".
+  { iExists n, enforce_min, height, elems. iFrame.
+    iSplit; [iIntros "$"|]; done. }
+  wp_bind (do_for _ _ _). iApply (wp_for with "[-]"). { by iNamedAccu. }
+  iIntros "!# __CTX". iNamed "__CTX". iNamed "HI".
+  (* Evaluate the for condition: open node_repr_aux to access children *)
+  destruct h as [|h']; simpl; iNamed "Hcur";
+    iDestruct (own_slice_len with "Hchildren_own") as %Hcl_len;
+    iDestruct (own_slice_len with "Hitems_own") as %Hitems_len.
+  - (* height 0: leaf — children = [] *)
+    iDestruct "Hchildren_rep" as %[Hcl_nil Hcs_nil].
+    wp_auto.
+    (* condition is false: len(children) = 0 *)
+    destruct (decide _) as [Habs|_].
+    { exfalso. subst child_locs. simpl in *. word. }
+    destruct (decide _) as [_|Habs].
+    2:{ exfalso. apply Habs. subst child_locs. simpl in *. done. }
+    (* Now at Φ execute_val — this is the post-loop continuation *)
+    wp_auto. wp_if_destruct.
+    + (* items empty → return nil *)
+      iApply "HΦ". iSplitL.
+      { iApply "Hclose". iExists items_sl, children_sl, cow_val, items_list, [], [].
+        iFrame. iPureIntro. repeat split; try done; try set_solver. }
+      iPureIntro. intros Habs'. exfalso. exact (Habs' eq_refl).
+    + (* items non-empty → return items[0] *)
+      assert (length items_list > 0)%nat as Hitems_pos by word.
+      list_elem items_list 0%nat as item0.
+      rewrite decide_True; [|word].
+      wp_bind (![_] _)%E.
+      wp_apply (wp_load_slice_index with "[$Hitems_own]") as "Hitems_own".
+      { word. }
+      { iPureIntro. exact Hitem0_lookup. }
+      iApply "HΦ". iSplitL.
+      { iApply "Hclose". iExists items_sl, children_sl, cow_val, items_list, [], [].
+        iFrame. iPureIntro. repeat split; try done; try set_solver. }
+      iPureIntro. intros Hitem0_nn.
+      subst child_locs children_sets.
+      rewrite Helems union_empty_r_L.
+      split.
+      { apply elem_of_list_to_set. eapply list_elem_of_lookup_2. exact Hitem0_lookup. }
+      intros e He.
+      destruct (Hmin_pres item0) as [_ Hitem0_min].
+      { rewrite Helems union_empty_r_L. apply elem_of_list_to_set.
+        eapply list_elem_of_lookup_2. exact Hitem0_lookup. }
+      { intros e' He'.
+        rewrite Helems union_empty_r_L in He'.
+        apply elem_of_list_to_set in He'.
+        apply list_elem_of_lookup_1 in He' as [j Hj].
+        destruct (decide (j = 0%nat)) as [->|].
+        - rewrite Hj in Hitem0_lookup. injection Hitem0_lookup as <-.
+          intros HR. exact (irreflexivity R _ HR).
+        - intros HR.
+          exact (irreflexivity R item0 (transitivity HR (Hsorted 0%nat j ltac:(lia) item0 _ Hitem0_lookup Hj))). }
+      apply Hitem0_min. rewrite Helems union_empty_r_L.
+      apply elem_of_list_to_set.
+      apply elem_of_list_to_set in He.
+      apply list_elem_of_lookup_1 in He as [j Hj].
+      eapply list_elem_of_lookup_2. exact Hj.
+  - (* height S h': interior node *)
+    wp_auto. wp_if_destruct.
+    + (* len(children) > 0, walk to children[0] *)
+      assert (length child_locs > 0)%nat as Hcl_pos by word.
+      list_elem child_locs 0%nat as child0.
+      iDestruct (big_sepL2_length with "Hchildren_rep") as %Hcl_cs_len.
+      assert (∃ cs0, children_sets !! 0%nat = Some cs0) as [cs0 Hcs0]
+        by (apply lookup_lt_is_Some_2; lia).
+      rewrite decide_True; [|word].
+      wp_bind (![_] _)%E.
+      wp_apply (wp_load_slice_index with "[$Hchildren_own]") as "Hchildren_own".
+      { word. }
+      { iPureIntro. exact Hchild0_lookup. }
+      iDestruct (big_sepL2_lookup_acc with "Hchildren_rep") as "[Hchild Hchildren_rep_close]".
+      { exact Hchild0_lookup. }
+      { exact Hcs0. }
+      wp_auto.
+      wp_for_post.
+      iExists child0, true, h', cs0.
+      iFrame "n Hchild".
+      iSplit.
+      { iIntros "Hchild".
+        iDestruct ("Hchildren_rep_close" with "Hchild") as "Hchildren_rep".
+        iApply "Hclose".
+        iExists items_sl, children_sl, cow_val, items_list, child_locs, children_sets.
+        iFrame. iPureIntro. repeat split; try done; try apply Hordering. }
+      iPureIntro.
+      intros m Hm Hmin.
+      destruct (Hmin_pres m Hm Hmin) as [Hm_cur Hm_min_cur].
+      rewrite Helems in Hm_cur.
+      apply elem_of_union in Hm_cur as [Hm_items | Hm_children].
+      * (* m ∈ items — contradiction *)
+        apply elem_of_list_to_set in Hm_items.
+        apply list_elem_of_lookup_1 in Hm_items as [j Hj].
+        destruct Hordering as [Hupper Hlower].
+        destruct (decide (cs0 = ∅)) as [->|Hne].
+        { split; [set_solver|done]. }
+        exfalso.
+        assert (∃ e, e ∈ cs0) as [e He] by (apply set_choose_L; done).
+        assert (e ∈ (list_to_set items_list ∪ ⋃ children_sets)) as He_cur.
+        { apply elem_of_union_r. apply elem_of_union_list.
+          eexists. split; [eapply list_elem_of_lookup_2; exact Hcs0|done]. }
+        rewrite -Helems in He_cur.
+        assert (¬R e m) as HneR by (apply Hm_min_cur; done).
+        assert (j < length items_list)%nat as Hj_bound by (eapply lookup_lt_Some; eauto).
+        destruct (decide (j = 0%nat)) as [->|Hj_ne0].
+        { exact (HneR (Hupper 0%nat cs0 m Hcs0 Hj e He)). }
+        { assert (∃ x0, items_list !! 0%nat = Some x0) as [x0 Hx0]
+            by (apply lookup_lt_is_Some_2; lia).
+          exact (HneR (transitivity (Hupper 0%nat cs0 x0 Hcs0 Hx0 e He)
+                                     (Hsorted 0%nat j ltac:(lia) x0 m Hx0 Hj))). }
+      * (* m ∈ ⋃ children_sets *)
+        rewrite elem_of_union_list in Hm_children.
+        destruct Hm_children as [s [Hs_in Hm_in_s]].
+        apply list_elem_of_lookup_1 in Hs_in as [k Hk].
+        destruct Hordering as [Hupper Hlower].
+        destruct (decide (k = 0%nat)) as [->|Hk_ne0].
+        { rewrite Hk in Hcs0. injection Hcs0 as <-.
+          split; [done|].
+          intros e He_cs0. apply Hm_min_cur.
+          rewrite Helems. apply elem_of_union_r. apply elem_of_union_list.
+          eexists. split; [eapply list_elem_of_lookup_2; exact Hcs0|done]. }
+        { exfalso.
+          assert (0 < k)%nat as Hk_pos by lia.
+          assert (k - 1 < length items_list)%nat.
+          { assert (k < length children_sets)%nat by (eapply lookup_lt_Some; eauto). lia. }
+          assert (∃ xk1, items_list !! (k - 1)%nat = Some xk1) as [xk1 Hxk1]
+            by (apply lookup_lt_is_Some_2; lia).
+          assert (R xk1 m) by exact (Hlower k s xk1 Hk_pos Hk Hxk1 m Hm_in_s).
+          assert (xk1 ∈ (list_to_set items_list ∪ ⋃ children_sets)).
+          { apply elem_of_union_l. apply elem_of_list_to_set.
+            eapply list_elem_of_lookup_2. exact Hxk1. }
+          rewrite -Helems in *.
+          exact (Hm_min_cur xk1 ltac:(done) ltac:(done)). }
+    + (* Loop exit: len(children) = 0 *)
+      assert (child_locs = []) as Hcl_nil by (apply nil_length_inv; word).
+      iDestruct (big_sepL2_nil_inv_l with "Hchildren_rep") as %Hcs_nil.
+      { exact Hcl_nil. }
+      wp_auto. wp_if_destruct.
+      * (* items empty → return nil *)
+        iApply "HΦ". iSplitL.
+        { iApply "Hclose". subst child_locs children_sets.
+          iExists items_sl, children_sl, cow_val, items_list, [], [].
+          iFrame. iSplit; [done|]. iPureIntro. repeat split; try done; try apply Hordering. }
+        iPureIntro. intros Habs. exfalso. exact (Habs eq_refl).
+      * (* items non-empty → return items[0] *)
+        assert (length items_list > 0)%nat as Hitems_pos by word.
+        list_elem items_list 0%nat as item0.
+        rewrite decide_True; [|word].
+        wp_bind (![_] _)%E.
+        wp_apply (wp_load_slice_index with "[$Hitems_own]") as "Hitems_own".
+        { word. }
+        { iPureIntro. exact Hitem0_lookup. }
+        iApply "HΦ". iSplitL.
+        { iApply "Hclose". subst child_locs children_sets.
+          iExists items_sl, children_sl, cow_val, items_list, [], [].
+          iFrame. iSplit; [done|]. iPureIntro. repeat split; try done; try apply Hordering. }
+        iPureIntro. intros Hitem0_nn.
+        subst child_locs children_sets.
+        rewrite Helems union_empty_r_L.
+        destruct (Hmin_pres item0) as [Hitem0_in Hitem0_min].
+        { rewrite Helems union_empty_r_L. apply elem_of_list_to_set.
+          eapply list_elem_of_lookup_2. exact Hitem0_lookup. }
+        { intros e He.
+          rewrite Helems union_empty_r_L in He.
+          apply elem_of_list_to_set in He.
+          apply list_elem_of_lookup_1 in He as [j Hj].
+          destruct (decide (j = 0%nat)) as [->|].
+          - rewrite Hj in Hitem0_lookup. injection Hitem0_lookup as <-.
+            intros HR. exact (irreflexivity R _ HR).
+          - intros HR.
+            exact (irreflexivity R item0 (transitivity HR (Hsorted 0%nat j ltac:(lia) item0 _ Hitem0_lookup Hj))). }
+        split.
+        { apply elem_of_list_to_set. eapply list_elem_of_lookup_2. exact Hitem0_lookup. }
+        intros e He.
+        apply elem_of_list_to_set in He.
+        apply list_elem_of_lookup_1 in He as [j Hj].
+        destruct (decide (j = 0%nat)) as [->|Hj_ne0].
+        { rewrite Hj in Hitem0_lookup. injection Hitem0_lookup as <-.
+          intros HR. exact (irreflexivity R _ HR). }
+        { intros HR.
+          assert (R item0 e) as H0j by (eapply Hsorted; [lia | exact Hitem0_lookup | exact Hj]).
+          exact (irreflexivity R item0 (transitivity HR H0j)). }*)
+Admitted.
+
 End proof.
