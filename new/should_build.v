@@ -34,6 +34,8 @@ From New.proof.github_com.goose_lang.goose.testdata.examples.unittest Require
 From New.generatedproof.github_com.goose_lang.goose.testdata.examples.unittest Require
   externalglobals.
 
+From New.proof.github_com.codyjrivera Require heapexamples.
+
 (* misc. *)
 From New.generatedproof.github_com.stretchr.testify Require assert.
 From New.proof Require Import inG_problem.
