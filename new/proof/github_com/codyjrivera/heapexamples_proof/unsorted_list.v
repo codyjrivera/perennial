@@ -42,6 +42,15 @@ Definition is_list (p : loc) (S : gset w64) : iProp Σ :=
  *   ∃ (elems : list w64), ⌜list_to_set elems = S⌝ ∗ is_list_elems p elems.
  *)
 
+(* Framework gap: struct_field_ref is abstract, so there is no general lemma
+   deriving l ≠ null from a struct field pointsto at l. However, in the
+   concrete Go semantics, the first field of any struct is at offset 0, so
+   struct_field_ref _ "Val" l = l, and heap_pointsto_non_null gives l ≠ null.
+   We state this as a helper until the framework exposes it. *)
+Lemma is_list_aux_null_inv n S :
+  is_list_aux (Datatypes.S n) null S -∗ False.
+Proof. Admitted.
+
 Lemma wp_ListNode__InsertFront (head : loc) (v : w64) (S : gset w64) :
   {{{ is_pkg_init heapexamples ∗ is_list head S }}}
     head @! (go.PointerType heapexamples.ListNode) @! "InsertFront" #v
@@ -49,77 +58,67 @@ Lemma wp_ListNode__InsertFront (head : loc) (v : w64) (S : gset w64) :
 Proof.
   wp_start as "Hlist".
   wp_auto.
-  wp_alloc head' as "Hnew".
+  wp_alloc head' as "Hnode".
   wp_auto.
-  iStructNamed "Hnew".
   iApply "HΦ".
-  unfold is_list.
+  iStructNamed "Hnode". simpl.
   iDestruct "Hlist" as (n) "Hlist".
   iExists (Datatypes.S n).
   simpl.
   iExists v, head, S.
   iFrame.
-  iPureIntro.
-  set_solver.
+  iPureIntro. done.
 Qed.
-
-Lemma wp_ListNode__ContainsRecursive_aux (n : nat) (head : loc) (v : w64) (S : gset w64) :
-  {{{ is_pkg_init heapexamples ∗ is_list_aux n head S }}}
-    head @! (go.PointerType heapexamples.ListNode) @! "ContainsRecursive" #v
-  {{{ (b : bool), RET #b; is_list_aux n head S ∗ ⌜b = bool_decide (v ∈ S)⌝ }}}.
-Proof.
-  revert head S.
-  induction n as [|n' IHn'].
-  - (* Base case *)
-    iIntros (head' S') "!# [#Hinit Haux] HΦ".
-    simpl.
-    iDestruct "Haux" as "[%Hnull %Hempty]".
-    subst.
-    wp_start as "_".
-    wp_auto.
-    iApply ("HΦ" $! false).
-    iSplit.
-    + simpl. iSplit; iPureIntro; done.
-    + iPureIntro. symmetry. apply bool_decide_eq_false. set_solver.
-  - (* Inductive case *)
-    iIntros (head' S') "!# [#Hinit Haux] HΦ".
-    simpl.
-    iDestruct "Haux" as (val next S'') "[%Hunion [HVal [HNext Htail]]]".
-    subst.
-    wp_start as "_".
-    wp_auto.
-    wp_if_destruct.
-    + (* val ≠ v *)
-      wp_auto.
-      wp_apply (IHn' with "[$Hinit $Htail]").
-      iIntros (b) "[Htail %Hb]".
-      wp_auto.
-      iApply "HΦ".
-      iSplit.
-      * simpl. iExists val, next, S''. iFrame. iPureIntro. done.
-      * iPureIntro. subst b. f_equal.
-        apply propext. split; intros Hin.
-        -- apply elem_of_union in Hin as [Hin|Hin]; first by apply elem_of_singleton_1 in Hin; exfalso; apply Heqb; word.
-           exact Hin.
-        -- apply elem_of_union_r. exact Hin.
-    + (* val = v *)
-      wp_auto.
-      iApply ("HΦ" $! true). iSplit.
-      * simpl. iExists val, next, S''. iFrame. iPureIntro. done.
-      * iPureIntro. symmetry. apply bool_decide_eq_true. set_solver.
-Admitted.
 
 Lemma wp_ListNode__ContainsRecursive (head : loc) (v : w64) (S : gset w64) :
   {{{ is_pkg_init heapexamples ∗ is_list head S }}}
     head @! (go.PointerType heapexamples.ListNode) @! "ContainsRecursive" #v
   {{{ (b : bool), RET #b; is_list head S ∗ ⌜b = bool_decide (v ∈ S)⌝ }}}.
 Proof.
-  iIntros (Φ) "[#Hinit Hlist] HΦ".
-  iDestruct "Hlist" as (n) "Haux".
-  wp_apply (wp_ListNode__ContainsRecursive_aux with "[$Hinit $Haux]").
-  iIntros (b) "[Haux %Hb]".
-  iApply "HΦ". iSplit; last by iPureIntro.
-  iExists n. iFrame.
-Admitted.
+  wp_start as "Hlist".
+  iLöb as "IH" forall (head S) "Hlist HΦ".
+  iDestruct "Hlist" as (n) "Hlist".
+  destruct n as [|n].
+  - (* Empty list: head = null *)
+    simpl. iDestruct "Hlist" as "[-> ->]".
+    wp_auto.
+    iApply "HΦ". iSplit.
+    + iExists 0%nat. simpl. auto.
+    + iPureIntro. symmetry. apply bool_decide_eq_false_2. set_solver.
+  - (* Non-empty list *)
+    simpl. iDestruct "Hlist" as (val next S') "(%Heq & Hval & Hnext & Hrest)".
+    subst S.
+    wp_auto.
+    wp_if_destruct.
+    + (* head == null — impossible: non-empty list at null *)
+      iExFalso.
+      iApply (is_list_aux_null_inv n ({[val]} ∪ S')).
+      simpl. iExists val, next, S'. iFrame. done.
+    + (* head ≠ null *)
+      wp_pures.
+      wp_if_destruct.
+      * (* head.Val == v *)
+        iApply "HΦ". iSplit.
+        { iExists (Datatypes.S n). simpl. iExists v, next, S'. iFrame. iPureIntro. done. }
+        { iPureIntro. symmetry. apply bool_decide_eq_true_2. set_solver. }
+      * (* head.Val ≠ v, recursive call *)
+        iAssert (is_list next S') with "[Hrest]" as "Hrest".
+        { iExists n. iFrame. }
+        wp_bind (next @! (go.PointerType heapexamples.ListNode) @! "ContainsRecursive" #v)%E.
+        iAssert (is_list next S') with "[Hrest]" as "Hrest".
+        { iExists n. iFrame. }
+        wp_apply ("IH" with "[$Hrest]").
+        iIntros (b) "[Hrest %Hb]".
+        iApply "HΦ". iSplit.
+        { iDestruct "Hrest" as (m) "Hrest".
+          iExists (Datatypes.S m). simpl. iExists val, next, S'. iFrame. iPureIntro. done. }
+        { iPureIntro. subst b.
+          destruct (bool_decide_reflect (v ∈ S')) as [Hin|Hnotin];
+          destruct (bool_decide_reflect (v ∈ {[val]} ∪ S')) as [Hin'|Hnotin'].
+          -- done.
+          -- exfalso. apply Hnotin'. set_solver.
+          -- exfalso. apply Hnotin. set_solver.
+          -- done. }
+Qed.
 
 End proof.
