@@ -69,6 +69,7 @@ for a tactic.
 
 | Tactic | Description |
 |:--|:--|
+| `iLöb as "IH" forall (x y)` | Löb induction — **required for recursive function proofs** (see below) |
 | `iIntros "ipat"` / `iIntros (x)` | Introduce from goal |
 | `iDestruct "H" as "ipat"` / `as (x) "ipat"` | Destruct / existential |
 | `iNamed "H"` | Destruct named propositions (`∷` notation) |
@@ -145,6 +146,54 @@ for a tactic.
 rewrites), `split_and!` (split `∧`).
 
 ## Common Proof Patterns
+
+### Recursive function
+
+**Critical**: use `iLöb` **before** `wp_start`, not after. After `wp_start` the
+goal is a WP, not a Hoare triple, so `iLöb` won't fire.
+
+```coq
+Proof.
+  iLöb as "IH" forall (head S).   (* generalize over args that change in the recursion *)
+  wp_start as "Hpre".
+  iDestruct "Hpre" as (n) "Hpre".
+  destruct n as [|n'].
+  - (* Base case *)
+    iDestruct "Hpre" as "[%Hnull %Hempty]". subst.
+    wp_auto.
+    iApply "HΦ". ...
+  - (* Inductive case *)
+    simpl.
+    iDestruct "Hpre" as (v next S') "(%Heq & Hv & Hn & Hrest)". subst.
+    wp_auto.
+    wp_if_destruct.   (* null check *)
+    + (* contradiction — see Known Gaps below *)
+      iExFalso. iApply (my_aux_non_null ...). ...
+    + (* main logic *)
+      wp_pures.       (* or nothing, depending on what precedes the recursive call *)
+      wp_apply ("IH" $! next S' with "[Hrest]").
+      { iFrame "#". iExists n'. iFrame. }
+      iIntros (result) "Hpost".
+      wp_auto.        (* use wp_pures instead if the recursive call is read-only *)
+      iApply "HΦ". ...
+Qed.
+```
+
+After the recursive `wp_apply`:
+- **Read-only calls** (no stores after the call): use `wp_pures`.
+- **Mutating calls** (a store follows): use `wp_auto` — it handles loads+store+return together.
+
+#### Known framework gap: null contradiction in the inductive case
+
+`struct_field_ref` is abstract, so there is no general lemma deriving `l ≠ null`
+from a struct-field points-to. If your rep invariant needs to rule out null in the
+inductive case, admit a helper:
+
+```coq
+Lemma my_aux_non_null (n : nat) (S : gset w64) :
+  my_list_aux (Datatypes.S n) null S -∗ False.
+Proof. Admitted.
+```
 
 ### Simple function
 ```coq

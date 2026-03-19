@@ -404,6 +404,120 @@ assertion `asn`. Creates three subgoals:
 
 ---
 
+## Recursive Functions — `iLöb`
+
+### Overview
+
+Go functions that call themselves require **Löb induction** (`iLöb`) to prove in
+Perennial. The key rule: **`iLöb` must come before `wp_start`**.
+
+After `wp_start` the goal is a WP (`WP expr {{ Φ }}`), not a Hoare triple. `iLöb`
+operates on Hoare triples; calling it after `wp_start` will fail or produce the
+wrong IH. Similarly, `iInduction` + manual `iIntros` fails because `wp_start` then
+can't find its Hoare triple.
+
+### Syntax
+
+```coq
+iLöb as "IH" forall (head S).
+```
+
+- `"IH"` — name for the induction hypothesis (an IPM hypothesis, so it needs quotes)
+- `forall (head S)` — generalize over variables that change in each recursive call;
+  anything not generalized is fixed for the entire induction
+
+### Proof state
+
+**Before `iLöb`**:
+```
+============================
+{{{ is_pkg_init pkg ∗ is_list head S }}}
+  head @! (go.PointerType pkg.Node) @! "MyMethod" #arg
+{{{ (r : T), RET #r; Q head S r }}}
+```
+
+**After `iLöb as "IH" forall (head S)`**:
+```
+"IH" : ∀ (head : loc) (S : gset w64),
+         {{{ is_pkg_init pkg ∗ is_list head S }}}
+           head @! (go.PointerType pkg.Node) @! "MyMethod" #arg
+         {{{ (r : T), RET #r; Q head S r }}}
+-------------------------------∗
+{{{ is_pkg_init pkg ∗ is_list head S }}}
+  head @! (go.PointerType pkg.Node) @! "MyMethod" #arg
+{{{ (r : T), RET #r; Q head S r }}}
+```
+
+The IH is a Hoare triple in the IPM context. Apply it with:
+
+```coq
+wp_apply ("IH" $! next_head next_S with "[resources]").
+{ iFrame "#". iExists n'. iFrame. }
+iIntros (result) "Hpost".
+```
+
+The `$!` splat is how you instantiate the `forall` arguments. Resources for the
+precondition go in `with "[...]"`.
+
+### Full skeleton for recursive linked-list methods
+
+```coq
+Proof.
+  iLöb as "IH" forall (head S).
+  wp_start as "Hlist".
+  iDestruct "Hlist" as (n) "Hlist".
+  destruct n as [|n'].
+  - (* Base: head = null, S = ∅ *)
+    iDestruct "Hlist" as "[%Hnull %Hempty]". subst.
+    wp_auto.
+    iApply "HΦ". (* construct postcondition for empty case *) ...
+  - (* Inductive: n = S n' *)
+    simpl.
+    iDestruct "Hlist" as (hd_val next S') "(%Heq & Hval & Hnext & Hrest)". subst.
+    wp_auto.             (* handles loads, stops before first if *)
+    wp_if_destruct.      (* null check *)
+    + (* head = null — contradiction in inductive case *)
+      iExFalso.
+      iApply (is_list_aux_non_null n' _).
+      simpl. iExists hd_val, next, S'. iFrame. iPureIntro. done.
+    + (* head ≠ null — main case *)
+      wp_pures.          (* or omit, depending on context *)
+      wp_apply ("IH" $! next S' with "[Hrest]").
+      { iFrame "#". iExists n'. iFrame. }
+      iIntros (...) "...".
+      wp_auto.           (* wp_pures if no stores follow *)
+      iApply "HΦ". (* reconstruct is_list for next case *) ...
+Qed.
+```
+
+### `wp_auto` vs `wp_pures` after the recursive call
+
+| Situation | Tactic |
+|:--|:--|
+| Read-only recursive call (Contains, Copy source side) | `wp_pures` |
+| Mutating recursive call (InsertBack, DeleteAll) — a store to a field follows | `wp_auto` |
+
+`wp_pures` can't handle stores. `wp_store` fails when loads precede the store that
+it can't see past. `wp_auto` handles the full load-store-return sequence in one go.
+
+### Null contradiction in the inductive case
+
+`struct_field_ref` is an abstract typeclass; there is no general lemma deriving
+`l ≠ null` from a struct-field points-to `l.[T, "f"] ↦ v`. When your rep invariant
+has `Datatypes.S n` nodes but `wp_if_destruct` still creates a `head = null` branch,
+the right workaround is an admitted helper:
+
+```coq
+Lemma is_list_aux_non_null (n : nat) (S : gset w64) :
+  is_list_aux (Datatypes.S n) null S -∗ False.
+Proof. Admitted.
+(* Framework gap: struct_field_ref is abstract, so heap_pointsto_non_null
+   doesn't apply to struct field points-to. Would be closed if struct_field_ref
+   were exposed as definitionally equal to the field offset for concrete types. *)
+```
+
+---
+
 ## Struct Tactics — Detailed
 
 ### `iStructNamed`
